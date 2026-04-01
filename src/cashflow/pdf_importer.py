@@ -19,6 +19,8 @@ Ignore page headers, page footers, balances, summaries, carry-over amounts, lega
 Use ISO dates in YYYY-MM-DD format.
 Use signed amounts in euro cents. Money leaving the account must be negative. Money entering the account must be positive.
 Use short lowercase categories like groceries, salary, rent, transport, transfer, shopping, fees, insurance, utilities, cash, taxes, health, or entertainment. Use null when unclear.
+If the transaction description contains "sparplan" or "sparrate", categorize it as "savings".
+If the transaction description contains "fk muenchen-erhebung", categorize it as "taxes".
 """
 
 USER_PROMPT = """Extract all booked transaction line items from the attached ING Girokonto PDF.
