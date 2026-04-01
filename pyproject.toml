@@ -1,0 +1,21 @@
+[project]
+name = "cashflow"
+version = "0.1.0"
+description = "Cashflow tracker for ING PDF imports"
+readme = "README.md"
+authors = [
+    { name = "Alpengeist", email = "alpen.hermann@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=2.0.0",
+    "pydantic>=2.11.0",
+    "PySide6>=6.9.0",
+]
+
+[project.scripts]
+cashflow = "cashflow:main"
+
+[build-system]
+requires = ["uv_build>=0.8.6,<0.9.0"]
+build-backend = "uv_build"
