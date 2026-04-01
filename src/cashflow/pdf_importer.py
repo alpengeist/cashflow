@@ -61,11 +61,11 @@ class PdfImportService:
 
     def import_pdf(self, pdf_path: Path) -> int:
         self.db.initialize()
-        pdf_base64 = encode_pdf_base64(pdf_path)
+        pdf_data_url = encode_pdf_data_url(pdf_path)
 
         parsed = self._extract_line_items(
             file_name=pdf_path.name,
-            pdf_base64=pdf_base64,
+            pdf_data_url=pdf_data_url,
         )
         self.db.save_import(
             sha256=sha256sum(pdf_path),
@@ -81,7 +81,7 @@ class PdfImportService:
         self,
         *,
         file_name: str,
-        pdf_base64: str,
+        pdf_data_url: str,
     ) -> list[StoredLineItem]:
         if not os.getenv("OPENAI_API_KEY"):
             raise RuntimeError("OPENAI_API_KEY is not set.")
@@ -97,7 +97,7 @@ class PdfImportService:
                         {
                             "type": "input_file",
                             "filename": file_name,
-                            "file_data": pdf_base64,
+                            "file_data": pdf_data_url,
                         },
                         {
                             "type": "input_text",
@@ -127,14 +127,15 @@ class PdfImportService:
         ]
 
 
-def encode_pdf_base64(pdf_path: Path) -> str:
+def encode_pdf_data_url(pdf_path: Path) -> str:
     file_size = pdf_path.stat().st_size
     if file_size > MAX_PDF_BYTES:
         size_mb = file_size / (1024 * 1024)
         raise ValueError(
             f"{pdf_path.name} is {size_mb:.1f} MB. PDF inputs must stay below 50 MB."
         )
-    return base64.b64encode(pdf_path.read_bytes()).decode("ascii")
+    base64_data = base64.b64encode(pdf_path.read_bytes()).decode("ascii")
+    return f"data:application/pdf;base64,{base64_data}"
 
 
 def sha256sum(file_path: Path) -> str:

@@ -27,7 +27,7 @@ uv sync
 uv run cashflow
 ```
 
-The app reads `.env` from the project root during startup.
+The app reads `.env` from the project root during startup via `python-dotenv`.
 
 Example `.env`:
 

@@ -4,6 +4,9 @@ import os
 import sys
 from pathlib import Path
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -20,10 +23,20 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from dotenv import load_dotenv
 
-from .database import Database
-from .env import load_dotenv
-from .pdf_importer import PdfImportService
+if __package__ in {None, ""}:
+    from cashflow.database import Database
+    from cashflow.pdf_importer import PdfImportService
+    from cashflow.settings import AppSettings, SettingsStore
+else:
+    from .database import Database
+    from .pdf_importer import PdfImportService
+    from .settings import AppSettings, SettingsStore
+
+
+APP_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_DIR = Path(__file__).resolve().parent
 
 
 class ImportWorker(QThread):
@@ -62,9 +75,11 @@ class ImportWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.db_path = Path.cwd() / "cashflow.db"
+        self.db_path = APP_ROOT / "cashflow.db"
         self.database = Database(self.db_path)
         self.database.initialize()
+        self.settings_store = SettingsStore()
+        self.settings = self.settings_store.load()
         self.worker: ImportWorker | None = None
 
         self.setWindowTitle("Cashflow Importer")
@@ -141,14 +156,17 @@ class MainWindow(QMainWindow):
         self.refresh_table()
 
     def import_pdfs(self) -> None:
+        initial_directory = self._get_initial_pdf_directory()
         pdf_paths, _ = QFileDialog.getOpenFileNames(
             self,
             "Select ING PDFs",
-            str(Path.home()),
+            str(initial_directory),
             "PDF Files (*.pdf)",
         )
         if not pdf_paths:
             return
+
+        self._save_last_pdf_directory(Path(pdf_paths[0]).parent)
 
         self._set_busy(True)
         self.status_label.setText("Preparing import...")
@@ -218,14 +236,33 @@ class MainWindow(QMainWindow):
                 "OPENAI_API_KEY is missing. Import will fail until it is set."
             )
 
+    def _get_initial_pdf_directory(self) -> Path:
+        if self.settings.last_pdf_directory:
+            directory = Path(self.settings.last_pdf_directory)
+            if directory.is_dir():
+                return directory
+        return Path.home()
+
+    def _save_last_pdf_directory(self, directory: Path) -> None:
+        self.settings = AppSettings(last_pdf_directory=str(directory))
+        self.settings_store.save(self.settings)
+
 
 def format_amount(amount_cents: int) -> str:
     euros = amount_cents / 100
     return f"{euros:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
 
+def load_app_env() -> Path | None:
+    for dotenv_path in (APP_ROOT / ".env", PACKAGE_DIR / ".env"):
+        if dotenv_path.is_file():
+            load_dotenv(dotenv_path)
+            return dotenv_path
+    return None
+
+
 def main() -> None:
-    load_dotenv()
+    load_app_env()
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
