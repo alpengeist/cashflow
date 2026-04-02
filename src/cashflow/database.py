@@ -171,6 +171,78 @@ class Database:
             ).fetchall()
         return rows
 
+    def fetch_available_years(self) -> list[int]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT CAST(SUBSTR(booking_date, 1, 4) AS INTEGER) AS year
+                FROM line_items
+                WHERE booking_date GLOB '????-??-??'
+                ORDER BY year DESC
+                """
+            ).fetchall()
+        return [int(row["year"]) for row in rows]
+
+    def fetch_category_totals(self, year: int, *, inflow: bool) -> list[sqlite3.Row]:
+        comparator = ">" if inflow else "<"
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    COALESCE(NULLIF(TRIM(category), ''), 'uncategorized') AS category,
+                    ABS(SUM(amount_cents)) AS total_amount_cents
+                FROM line_items
+                WHERE SUBSTR(booking_date, 1, 4) = ?
+                  AND amount_cents {comparator} 0
+                GROUP BY COALESCE(NULLIF(TRIM(category), ''), 'uncategorized')
+                ORDER BY total_amount_cents DESC, category ASC
+                """,
+                (str(year),),
+            ).fetchall()
+        return rows
+
+    def fetch_active_month_count(self, year: int) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(DISTINCT SUBSTR(booking_date, 1, 7)) AS month_count
+                FROM line_items
+                WHERE SUBSTR(booking_date, 1, 4) = ?
+                  AND booking_date GLOB '????-??-??'
+                """,
+                (str(year),),
+            ).fetchone()
+        return int(row["month_count"])
+
+    def fetch_line_items_for_category(
+        self,
+        year: int,
+        *,
+        inflow: bool,
+        category: str,
+    ) -> list[sqlite3.Row]:
+        comparator = ">" if inflow else "<"
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    line_items.booking_date,
+                    line_items.description,
+                    line_items.amount_cents,
+                    line_items.currency,
+                    COALESCE(NULLIF(TRIM(line_items.category), ''), 'uncategorized') AS category,
+                    documents.file_name
+                FROM line_items
+                INNER JOIN documents ON documents.id = line_items.document_id
+                WHERE SUBSTR(line_items.booking_date, 1, 4) = ?
+                  AND line_items.amount_cents {comparator} 0
+                  AND COALESCE(NULLIF(TRIM(line_items.category), ''), 'uncategorized') = ?
+                ORDER BY line_items.booking_date DESC, line_items.id DESC
+                """,
+                (str(year), category),
+            ).fetchall()
+        return rows
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -30,11 +31,15 @@ from PySide6.QtWidgets import (
 
 if __package__ in {None, ""}:
     from cashflow.database import Database
+    from cashflow.formatting import format_amount
     from cashflow.pdf_importer import PdfImportService
+    from cashflow.reports import InOutReportTab
     from cashflow.settings import AppSettings, SettingsStore
 else:
     from .database import Database
+    from .formatting import format_amount
     from .pdf_importer import PdfImportService
+    from .reports import InOutReportTab
     from .settings import AppSettings, SettingsStore
 
 
@@ -83,29 +88,21 @@ class ImportWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+class ImportTab(QWidget):
+    import_succeeded = Signal()
+
+    def __init__(self, database: Database, settings_store: SettingsStore) -> None:
         super().__init__()
         self.db_path = APP_ROOT / "cashflow.db"
-        self.database = Database(self.db_path)
-        self.database.initialize()
-        self.settings_store = SettingsStore()
+        self.database = database
+        self.settings_store = settings_store
         self.settings = self.settings_store.load()
         self.worker: ImportWorker | None = None
         self.progress_dialog: QProgressDialog | None = None
 
-        self.setWindowTitle("Cashflow Importer")
-        self.resize(1100, 720)
-
-        container = QWidget(self)
-        self.setCentralWidget(container)
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(18, 18, 18, 18)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-
-        title = QLabel("Cashflow Tool")
-        title.setStyleSheet("font-size: 24px; font-weight: 700;")
-        layout.addWidget(title)
 
         self.api_key_label = QLabel()
         self._refresh_api_key_status()
@@ -124,6 +121,7 @@ class MainWindow(QMainWindow):
         self.import_button = QPushButton("Import PDFs")
         self.import_button.clicked.connect(self.import_pdfs)
         controls.addWidget(self.import_button)
+        controls.addStretch(1)
 
         self.rules_toggle = QToolButton()
         self.rules_toggle.setText("Extra Categorization Rules")
@@ -155,7 +153,6 @@ class MainWindow(QMainWindow):
         self.rules_editor.setPlainText(self.settings.categorization_rules or "")
         self.rules_editor.textChanged.connect(self._save_categorization_rules)
         rules_layout.addWidget(self.rules_editor)
-
         layout.addWidget(self.rules_container)
 
         self.summary_label = QLabel()
@@ -255,6 +252,7 @@ class MainWindow(QMainWindow):
         self._close_progress_dialog()
         self.status_label.setText(message)
         self.refresh_table()
+        self.import_succeeded.emit()
 
     def _handle_failure(self, message: str) -> None:
         self._set_busy(False)
@@ -328,11 +326,36 @@ class MainWindow(QMainWindow):
         self.progress_dialog = None
 
 
-def format_amount(amount_cents: int) -> str:
-    euros = amount_cents / 100
-    return f"{euros:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+class MainWindow(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.db_path = APP_ROOT / "cashflow.db"
+        self.database = Database(self.db_path)
+        self.database.initialize()
+        self.settings_store = SettingsStore()
 
+        self.setWindowTitle("Cashflow Tool")
+        self.resize(1280, 800)
 
+        container = QWidget(self)
+        self.setCentralWidget(container)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("Cashflow Tool")
+        title.setStyleSheet("font-size: 24px; font-weight: 700;")
+        layout.addWidget(title)
+
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, stretch=1)
+
+        self.import_tab = ImportTab(self.database, self.settings_store)
+        self.report_tab = InOutReportTab(self.database)
+        self.import_tab.import_succeeded.connect(self.report_tab.refresh_years)
+
+        self.tabs.addTab(self.import_tab, "Import")
+        self.tabs.addTab(self.report_tab, "In/Out")
 def main() -> None:
     app = QApplication(sys.argv)
     window = MainWindow()
