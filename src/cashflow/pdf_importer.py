@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import os
 from pathlib import Path
 
 from openai import OpenAI
@@ -19,8 +18,6 @@ Ignore page headers, page footers, balances, summaries, carry-over amounts, lega
 Use ISO dates in YYYY-MM-DD format.
 Use signed amounts in euro cents. Money leaving the account must be negative. Money entering the account must be positive.
 Use short lowercase categories like groceries, salary, rent, transport, transfer, shopping, fees, insurance, utilities, cash, taxes, health, or entertainment. Use null when unclear.
-If the transaction description contains "sparplan" or "sparrate", categorize it as "savings".
-If the transaction description contains "fk muenchen-erhebung", categorize it as "taxes".
 """
 
 USER_PROMPT = """Extract all booked transaction line items from the attached ING Girokonto PDF.
@@ -57,9 +54,17 @@ class ParsedStatement(BaseModel):
 
 
 class PdfImportService:
-    def __init__(self, db_path: Path, model_name: str) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        model_name: str,
+        api_key: str,
+        extra_rules: str | None = None,
+    ) -> None:
         self.db = Database(db_path)
         self.model_name = model_name
+        self.api_key = api_key
+        self.extra_rules = extra_rules
 
     def import_pdf(self, pdf_path: Path) -> int:
         self.db.initialize()
@@ -85,13 +90,13 @@ class PdfImportService:
         file_name: str,
         pdf_data_url: str,
     ) -> list[StoredLineItem]:
-        if not os.getenv("OPENAI_API_KEY"):
-            raise RuntimeError("OPENAI_API_KEY is not set.")
+        if not self.api_key.strip():
+            raise RuntimeError("OpenAI API key is not configured in settings.")
 
-        client = OpenAI()
+        client = OpenAI(api_key=self.api_key)
         response = client.responses.parse(
             model=self.model_name,
-            instructions=SYSTEM_PROMPT,
+            instructions=build_system_prompt(self.extra_rules),
             input=[
                 {
                     "role": "user",
@@ -138,6 +143,13 @@ def encode_pdf_data_url(pdf_path: Path) -> str:
         )
     base64_data = base64.b64encode(pdf_path.read_bytes()).decode("ascii")
     return f"data:application/pdf;base64,{base64_data}"
+
+
+def build_system_prompt(extra_rules: str | None) -> str:
+    cleaned_rules = (extra_rules or "").strip()
+    if not cleaned_rules:
+        return SYSTEM_PROMPT
+    return f"{SYSTEM_PROMPT}\nAdditional categorization rules:\n{cleaned_rules}"
 
 
 def sha256sum(file_path: Path) -> str:

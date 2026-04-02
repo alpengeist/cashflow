@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -11,19 +11,22 @@ from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
+    QProgressDialog,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
-from dotenv import load_dotenv
 
 if __package__ in {None, ""}:
     from cashflow.database import Database
@@ -36,7 +39,6 @@ else:
 
 
 APP_ROOT = Path(__file__).resolve().parents[2]
-PACKAGE_DIR = Path(__file__).resolve().parent
 
 
 class ImportWorker(QThread):
@@ -50,15 +52,24 @@ class ImportWorker(QThread):
         pdf_paths: list[Path],
         db_path: Path,
         model_name: str,
+        api_key: str,
+        extra_rules: str,
     ) -> None:
         super().__init__()
         self.pdf_paths = pdf_paths
         self.db_path = db_path
         self.model_name = model_name
+        self.api_key = api_key
+        self.extra_rules = extra_rules
 
     def run(self) -> None:
         try:
-            service = PdfImportService(self.db_path, self.model_name)
+            service = PdfImportService(
+                self.db_path,
+                self.model_name,
+                self.api_key,
+                self.extra_rules,
+            )
             total_items = 0
             for index, pdf_path in enumerate(self.pdf_paths, start=1):
                 self.progress.emit(
@@ -81,6 +92,7 @@ class MainWindow(QMainWindow):
         self.settings_store = SettingsStore()
         self.settings = self.settings_store.load()
         self.worker: ImportWorker | None = None
+        self.progress_dialog: QProgressDialog | None = None
 
         self.setWindowTitle("Cashflow Importer")
         self.resize(1100, 720)
@@ -91,16 +103,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
 
-        title = QLabel("ING PDF Import")
+        title = QLabel("Cashflow Tool")
         title.setStyleSheet("font-size: 24px; font-weight: 700;")
         layout.addWidget(title)
-
-        subtitle = QLabel(
-            "Select exported ING Girokonto PDFs and send them directly to "
-            "OpenAI as file inputs to extract structured line items."
-        )
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
 
         self.api_key_label = QLabel()
         self._refresh_api_key_status()
@@ -111,17 +116,47 @@ class MainWindow(QMainWindow):
         layout.addLayout(controls)
 
         controls.addWidget(QLabel("Model"))
-        self.model_input = QLineEdit(os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        self.model_input = QLineEdit(self.settings.openai_model or "gpt-4o-mini")
         self.model_input.setPlaceholderText("gpt-4o-mini")
-        controls.addWidget(self.model_input, stretch=1)
+        self.model_input.setMaximumWidth(220)
+        controls.addWidget(self.model_input)
 
         self.import_button = QPushButton("Import PDFs")
         self.import_button.clicked.connect(self.import_pdfs)
         controls.addWidget(self.import_button)
 
-        self.refresh_button = QPushButton("Refresh")
-        self.refresh_button.clicked.connect(self.refresh_table)
-        controls.addWidget(self.refresh_button)
+        self.rules_toggle = QToolButton()
+        self.rules_toggle.setText("Extra Categorization Rules")
+        self.rules_toggle.setCheckable(True)
+        self.rules_toggle.setChecked(False)
+        self.rules_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.rules_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.rules_toggle.toggled.connect(self._toggle_rules_editor)
+        layout.addWidget(self.rules_toggle)
+
+        self.rules_container = QFrame()
+        self.rules_container.setVisible(False)
+        rules_layout = QVBoxLayout(self.rules_container)
+        rules_layout.setContentsMargins(0, 0, 0, 0)
+        rules_layout.setSpacing(6)
+
+        rules_hint = QLabel(
+            "Add freeform rules that should be appended to the OpenAI instructions "
+            "for line item categorization."
+        )
+        rules_hint.setWordWrap(True)
+        rules_layout.addWidget(rules_hint)
+
+        self.rules_editor = QPlainTextEdit()
+        self.rules_editor.setPlaceholderText(
+            'Examples:\n- If description contains "spotify", categorize as "entertainment".\n'
+            '- If description contains "miete", categorize as "rent".'
+        )
+        self.rules_editor.setPlainText(self.settings.categorization_rules or "")
+        self.rules_editor.textChanged.connect(self._save_categorization_rules)
+        rules_layout.addWidget(self.rules_editor)
+
+        layout.addWidget(self.rules_container)
 
         self.summary_label = QLabel()
         layout.addWidget(self.summary_label)
@@ -129,11 +164,10 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel("Ready.")
         layout.addWidget(self.status_label)
 
-        self.table = QTableWidget(0, 7)
+        self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
             [
                 "Booked",
-                "Value",
                 "Description",
                 "Amount",
                 "Currency",
@@ -143,12 +177,11 @@ class MainWindow(QMainWindow):
         )
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
         layout.addWidget(self.table, stretch=1)
@@ -167,17 +200,22 @@ class MainWindow(QMainWindow):
             return
 
         self._save_last_pdf_directory(Path(pdf_paths[0]).parent)
+        model_name = self.model_input.text().strip() or "gpt-4o-mini"
+        self._save_openai_settings(model_name)
 
         self._set_busy(True)
         self.status_label.setText("Preparing import...")
         self._refresh_api_key_status()
+        self._show_progress_dialog("Preparing import...")
 
         self.worker = ImportWorker(
             pdf_paths=[Path(path) for path in pdf_paths],
             db_path=self.db_path,
-            model_name=self.model_input.text().strip() or "gpt-4o-mini",
+            model_name=model_name,
+            api_key=self.settings.openai_api_key or "",
+            extra_rules=self.rules_editor.toPlainText(),
         )
-        self.worker.progress.connect(self.status_label.setText)
+        self.worker.progress.connect(self._update_progress)
         self.worker.succeeded.connect(self._handle_success)
         self.worker.failed.connect(self._handle_failure)
         self.worker.start()
@@ -190,7 +228,6 @@ class MainWindow(QMainWindow):
         for row_index, row in enumerate(rows):
             values = [
                 row["booking_date"],
-                row["value_date"] or "",
                 row["description"],
                 format_amount(row["amount_cents"]),
                 row["currency"],
@@ -199,7 +236,7 @@ class MainWindow(QMainWindow):
             ]
             for column_index, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                if column_index == 3:
+                if column_index == 2:
                     item.setTextAlignment(
                         int(
                             Qt.AlignmentFlag.AlignRight
@@ -215,25 +252,28 @@ class MainWindow(QMainWindow):
 
     def _handle_success(self, message: str) -> None:
         self._set_busy(False)
+        self._close_progress_dialog()
         self.status_label.setText(message)
         self.refresh_table()
 
     def _handle_failure(self, message: str) -> None:
         self._set_busy(False)
+        self._close_progress_dialog()
         self.status_label.setText(f"Import failed: {message}")
         QMessageBox.critical(self, "Import failed", message)
 
     def _set_busy(self, busy: bool) -> None:
         self.import_button.setEnabled(not busy)
-        self.refresh_button.setEnabled(not busy)
         self.model_input.setEnabled(not busy)
+        self.rules_toggle.setEnabled(not busy)
+        self.rules_editor.setEnabled(not busy)
 
     def _refresh_api_key_status(self) -> None:
-        if os.getenv("OPENAI_API_KEY"):
-            self.api_key_label.setText("OPENAI_API_KEY detected.")
+        if self.settings.openai_api_key:
+            self.api_key_label.setText("OpenAI API key loaded from settings.")
         else:
             self.api_key_label.setText(
-                "OPENAI_API_KEY is missing. Import will fail until it is set."
+                "OpenAI API key is missing in ~/.cashflow/settings.toml."
             )
 
     def _get_initial_pdf_directory(self) -> Path:
@@ -244,8 +284,48 @@ class MainWindow(QMainWindow):
         return Path.home()
 
     def _save_last_pdf_directory(self, directory: Path) -> None:
-        self.settings = AppSettings(last_pdf_directory=str(directory))
+        self.settings = replace(self.settings, last_pdf_directory=str(directory))
         self.settings_store.save(self.settings)
+
+    def _save_openai_settings(self, model_name: str) -> None:
+        self.settings = replace(self.settings, openai_model=model_name)
+        self.settings_store.save(self.settings)
+
+    def _save_categorization_rules(self) -> None:
+        self.settings = replace(
+            self.settings,
+            categorization_rules=self.rules_editor.toPlainText().strip() or None,
+        )
+        self.settings_store.save(self.settings)
+
+    def _toggle_rules_editor(self, expanded: bool) -> None:
+        self.rules_container.setVisible(expanded)
+        self.rules_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+
+    def _show_progress_dialog(self, message: str) -> None:
+        dialog = QProgressDialog(message, "", 0, 0, self)
+        dialog.setWindowTitle("Importing PDFs")
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setMinimumDuration(0)
+        dialog.setCancelButton(None)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.show()
+        self.progress_dialog = dialog
+
+    def _update_progress(self, message: str) -> None:
+        self.status_label.setText(message)
+        if self.progress_dialog is not None:
+            self.progress_dialog.setLabelText(message)
+
+    def _close_progress_dialog(self) -> None:
+        if self.progress_dialog is None:
+            return
+        self.progress_dialog.close()
+        self.progress_dialog.deleteLater()
+        self.progress_dialog = None
 
 
 def format_amount(amount_cents: int) -> str:
@@ -253,16 +333,7 @@ def format_amount(amount_cents: int) -> str:
     return f"{euros:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
 
-def load_app_env() -> Path | None:
-    for dotenv_path in (APP_ROOT / ".env", PACKAGE_DIR / ".env"):
-        if dotenv_path.is_file():
-            load_dotenv(dotenv_path)
-            return dotenv_path
-    return None
-
-
 def main() -> None:
-    load_app_env()
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()

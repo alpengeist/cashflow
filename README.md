@@ -27,20 +27,18 @@ uv sync
 uv run cashflow
 ```
 
-The app reads `.env` from the project root during startup via `python-dotenv`.
+The app reads OpenAI settings from `~/.cashflow/settings.toml`.
 
-Example `.env`:
+Example `settings.toml`:
 
-```dotenv
-OPENAI_API_KEY=your_api_key_here
-OPENAI_MODEL=gpt-4o-mini
-```
+```toml
+[recent]
+last_pdf_directory = "C:\\Users\\hermann\\Documents\\ING"
 
-Optional shell-based setup:
-
-```powershell
-$env:OPENAI_API_KEY="your_api_key_here"
-$env:OPENAI_MODEL="gpt-4o-mini"
+[openai]
+api_key = "your_api_key_here"
+model = "gpt-4o-mini"
+categorization_rules = "If description contains \"spotify\", categorize as \"entertainment\"."
 ```
 
 The app stores its database in `cashflow.db`.
