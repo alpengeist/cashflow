@@ -12,6 +12,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -110,8 +111,8 @@ class ImportTab(QWidget):
     SEARCH_INPUT_CHARS = 50
     BUTTON_WIDTH = 140
     CONTROLS_MARGIN = 10
-    CATEGORY_COLUMN = 4
-    DOCUMENT_COLUMN = 5
+    CATEGORY_COLUMN = 3
+    DOCUMENT_COLUMN = 4
 
     def __init__(self, database: Database, settings_store: SettingsStore) -> None:
         super().__init__()
@@ -190,6 +191,11 @@ class ImportTab(QWidget):
         self.model_input.setFixedWidth(self.MODEL_INPUT_WIDTH)
         controls.addWidget(self.model_input)
 
+        controls.addWidget(QLabel("Year"))
+        self.year_selector = QComboBox()
+        self.year_selector.currentIndexChanged.connect(self.refresh_table)
+        controls.addWidget(self.year_selector)
+
         controls.addWidget(QLabel("Search"))
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Filter descriptions")
@@ -242,13 +248,12 @@ class ImportTab(QWidget):
         self.status_label = QLabel("Ready.")
         layout.addWidget(self.status_label)
 
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
             [
                 "Booked",
                 "Description",
                 "Amount",
-                "Currency",
                 "Category",
                 "Document",
             ]
@@ -266,7 +271,7 @@ class ImportTab(QWidget):
         self.table.itemChanged.connect(self._handle_item_changed)
         layout.addWidget(self.table, stretch=1)
 
-        self.refresh_table()
+        self.refresh_years()
 
     def import_pdfs(self) -> None:
         initial_directory = self._get_initial_pdf_directory()
@@ -326,9 +331,11 @@ class ImportTab(QWidget):
 
     def refresh_table(self, _text: str | None = None) -> None:
         search_text = self.search_input.text().strip()
+        selected_year = self.current_year()
         rows = self.database.fetch_line_items(
             self.table_limit,
             search_text=search_text or None,
+            year=selected_year,
         )
         self._refreshing_table = True
         self.table.setSortingEnabled(False)
@@ -339,7 +346,6 @@ class ImportTab(QWidget):
                 row["booking_date"],
                 row["description"],
                 format_amount(row["amount_cents"]),
-                row["currency"],
                 row["category"] or "",
                 row["file_name"],
             ]
@@ -371,11 +377,19 @@ class ImportTab(QWidget):
 
         self.table.setSortingEnabled(True)
         self._refreshing_table = False
-        total_items = self.database.count_line_items()
+        total_items = self.database.count_line_items(year=selected_year)
+        scope_label = (
+            f"Year {selected_year}"
+            if selected_year is not None
+            else "All years"
+        )
         if search_text:
-            matching_items = self.database.count_line_items(search_text)
+            matching_items = self.database.count_line_items(
+                search_text,
+                year=selected_year,
+            )
             summary = (
-                f"Database: {total_items} imported line items. "
+                f"{scope_label}: {total_items} imported line items. "
                 f"Found {matching_items} match(es)"
             )
             if matching_items > len(rows):
@@ -383,8 +397,31 @@ class ImportTab(QWidget):
             else:
                 summary += "."
         else:
-            summary = f"Database: {total_items} imported line items."
+            summary = f"{scope_label}: {total_items} imported line items."
         self.summary_label.setText(summary)
+
+    def refresh_years(self) -> None:
+        years = self.database.fetch_available_years()
+        current_year = self.current_year()
+
+        self.year_selector.blockSignals(True)
+        self.year_selector.clear()
+        self.year_selector.addItem("All years", None)
+        for year in years:
+            self.year_selector.addItem(str(year), year)
+
+        target_index = 0
+        if current_year in years:
+            target_index = self.year_selector.findData(current_year)
+        self.year_selector.setCurrentIndex(max(0, target_index))
+        self.year_selector.blockSignals(False)
+        self.refresh_table()
+
+    def current_year(self) -> int | None:
+        value = self.year_selector.currentData()
+        if value is None:
+            return None
+        return int(value)
 
     def _schedule_search_refresh(self, _text: str) -> None:
         self.search_timer.start()
@@ -448,7 +485,7 @@ class ImportTab(QWidget):
             message += f" Skipped {total_skipped_files} already imported PDF(s)."
         self.status_label.setText(message)
         if imported_files:
-            self.refresh_table()
+            self.refresh_years()
             self.import_succeeded.emit()
 
     def _handle_failure(self, message: str) -> None:
@@ -462,6 +499,7 @@ class ImportTab(QWidget):
         self.import_button.setEnabled(not busy)
         self.reimport_checkbox.setEnabled(not busy)
         self.model_input.setEnabled(not busy)
+        self.year_selector.setEnabled(not busy)
         self.rules_toggle.setEnabled(not busy)
         self.rules_editor.setEnabled(not busy)
 

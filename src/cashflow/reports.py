@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QRectF, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFontMetrics, QMouseEvent, QPainter, QPen
-from PySide6.QtWidgets import QButtonGroup, QSizePolicy, QStyle
+from PySide6.QtWidgets import QButtonGroup, QSizePolicy
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -174,7 +173,7 @@ class HorizontalBarChartWidget(QWidget):
 
 
 class InOutReportTab(QWidget):
-    DOCUMENT_COLUMN = 4
+    DOCUMENT_COLUMN = 3
 
     def __init__(self, database: Database) -> None:
         super().__init__()
@@ -197,14 +196,6 @@ class InOutReportTab(QWidget):
         self.year_selector = QComboBox()
         self.year_selector.currentIndexChanged.connect(self.refresh_report)
         controls.addWidget(self.year_selector)
-        self.refresh_button = QToolButton()
-        self.refresh_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
-        )
-        self.refresh_button.setAutoRaise(True)
-        self.refresh_button.setToolTip("Refresh available years and recalculate the report")
-        self.refresh_button.clicked.connect(self.refresh_years)
-        controls.addWidget(self.refresh_button)
 
         self.mode_buttons = QButtonGroup(self)
         self.mode_buttons.setExclusive(True)
@@ -271,9 +262,9 @@ class InOutReportTab(QWidget):
         self.selection_label = QLabel("Click a bar or label to show matching line items.")
         details_layout.addWidget(self.selection_label)
 
-        self.details_table = QTableWidget(0, 5)
+        self.details_table = QTableWidget(0, 4)
         self.details_table.setHorizontalHeaderLabels(
-            ["Booked", "Description", "Amount", "Currency", "Document"]
+            ["Booked", "Description", "Amount", "Document"]
         )
         details_header = self.details_table.horizontalHeader()
         details_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -403,7 +394,6 @@ class InOutReportTab(QWidget):
                 row["booking_date"],
                 row["description"],
                 format_amount(abs(row["amount_cents"])),
-                row["currency"],
                 row["file_name"],
             ]
             for column_index, value in enumerate(values):

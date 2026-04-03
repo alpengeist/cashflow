@@ -168,8 +168,16 @@ class Database:
 
         return document_id
 
-    def count_line_items(self, search_text: str | None = None) -> int:
-        where_clauses, parameters = self._build_line_item_search(search_text)
+    def count_line_items(
+        self,
+        search_text: str | None = None,
+        *,
+        year: int | None = None,
+    ) -> int:
+        where_clauses, parameters = self._build_line_item_filters(
+            search_text=search_text,
+            year=year,
+        )
         where_sql = ""
         if where_clauses:
             where_sql = "WHERE " + " AND ".join(where_clauses)
@@ -214,8 +222,12 @@ class Database:
         limit: int | None = None,
         *,
         search_text: str | None = None,
+        year: int | None = None,
     ) -> list[sqlite3.Row]:
-        where_clauses, parameters = self._build_line_item_search(search_text)
+        where_clauses, parameters = self._build_line_item_filters(
+            search_text=search_text,
+            year=year,
+        )
         where_sql = ""
         if where_clauses:
             where_sql = "WHERE " + " AND ".join(where_clauses)
@@ -348,21 +360,32 @@ class Database:
         finally:
             connection.close()
 
-    def _build_line_item_search(
+    def _build_line_item_filters(
         self,
+        *,
         search_text: str | None,
+        year: int | None,
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        where_clauses: list[str] = []
+        parameters: list[str] = []
+
+        if year is not None:
+            where_clauses.append("SUBSTR(line_items.booking_date, 1, 4) = ?")
+            parameters.append(str(year))
+
         normalized = " ".join((search_text or "").split())
         if not normalized:
-            return (), ()
+            return tuple(where_clauses), tuple(parameters)
 
         tokens = normalized.split()
-        where_clauses = tuple("LOWER(line_items.description) LIKE ? ESCAPE '\\'" for _ in tokens)
-        parameters = tuple(
+        where_clauses.extend(
+            "LOWER(line_items.description) LIKE ? ESCAPE '\\'" for _ in tokens
+        )
+        parameters.extend(
             f"%{self._escape_like_pattern(token.lower())}%"
             for token in tokens
         )
-        return where_clauses, parameters
+        return tuple(where_clauses), tuple(parameters)
 
     def _escape_like_pattern(self, value: str) -> str:
         return (
