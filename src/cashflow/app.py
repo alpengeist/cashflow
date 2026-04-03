@@ -50,6 +50,58 @@ else:
 
 
 APP_ROOT = Path(__file__).resolve().parents[2]
+BUTTON_STYLESHEET = """
+QPushButton,
+QToolButton {
+    background-color: #f8fafc;
+    color: #0f172a;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    padding: 7px 14px;
+}
+QPushButton:hover,
+QToolButton:hover {
+    background-color: #e8f0ff;
+    border-color: #5b8cff;
+    color: #0b3aa4;
+}
+QPushButton:pressed,
+QToolButton:pressed {
+    background-color: #d7e6ff;
+    border-color: #2563eb;
+    color: #0b3aa4;
+}
+QPushButton:checked,
+QToolButton:checked {
+    background-color: #2563eb;
+    color: #ffffff;
+    border-color: #1d4ed8;
+}
+QPushButton:checked:hover,
+QToolButton:checked:hover {
+    background-color: #1d4ed8;
+    border-color: #1e40af;
+}
+QPushButton:checked:pressed,
+QToolButton:checked:pressed {
+    background-color: #1e3a8a;
+    border-color: #1e3a8a;
+}
+QPushButton:focus,
+QToolButton:focus {
+    border-color: #2563eb;
+}
+QPushButton:disabled,
+QToolButton:disabled {
+    background-color: #f1f5f9;
+    color: #94a3b8;
+    border-color: #dbe2ea;
+}
+QToolButton {
+    padding-left: 10px;
+    padding-right: 10px;
+}
+"""
 
 
 class ImportWorker(QThread):
@@ -142,28 +194,6 @@ class ImportTab(QWidget):
 
         self.import_button = QPushButton("Import PDFs")
         self.import_button.setFixedWidth(self.BUTTON_WIDTH)
-        self.import_button.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #2563eb;
-                color: white;
-                border: 1px solid #1d4ed8;
-                border-radius: 6px;
-                padding: 6px 12px;
-            }
-            QPushButton:hover {
-                background-color: #1d4ed8;
-            }
-            QPushButton:pressed {
-                background-color: #1e40af;
-            }
-            QPushButton:disabled {
-                background-color: #93c5fd;
-                border-color: #93c5fd;
-                color: #eff6ff;
-            }
-            """
-        )
         self.import_button.clicked.connect(self.import_pdfs)
         header_row.addWidget(self.import_button)
 
@@ -597,6 +627,7 @@ class MainWindow(QMainWindow):
         self.import_tab.status_label.setText(f"{source_message} Reports updated.")
 def main() -> None:
     app = QApplication(sys.argv)
+    app.setStyleSheet(BUTTON_STYLESHEET)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
