@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
-    QProgressDialog,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -42,17 +41,25 @@ if __package__ in {None, ""}:
     from cashflow.formatting import format_amount
     from cashflow.pdf_importer import PdfImportService
     from cashflow.reports import InOutReportTab
-    from cashflow.settings import AppSettings, SettingsStore
+    from cashflow.settings import SettingsStore
     from cashflow.table_items import NumericTableWidgetItem
-    from cashflow.ui import configure_compact_combo_box, ensure_table_header_width
+    from cashflow.ui import (
+        configure_compact_combo_box,
+        ensure_table_header_width,
+        LoadingOverlay,
+    )
 else:
     from .database import Database
     from .formatting import format_amount
     from .pdf_importer import PdfImportService
     from .reports import InOutReportTab
-    from .settings import AppSettings, SettingsStore
+    from .settings import SettingsStore
     from .table_items import NumericTableWidgetItem
-    from .ui import configure_compact_combo_box, ensure_table_header_width
+    from .ui import (
+        configure_compact_combo_box,
+        ensure_table_header_width,
+        LoadingOverlay,
+    )
 
 
 APP_ROOT = Path(__file__).resolve().parents[2]
@@ -109,6 +116,7 @@ class ImportWorker(QThread):
                 imported_count = service.import_pdf(
                     pdf_path,
                     reimport=self.reimport,
+                    on_progress=self.progress.emit,
                 )
                 if imported_count is None:
                     skipped_files += 1
@@ -123,6 +131,7 @@ class ImportWorker(QThread):
 
 class ImportTab(QWidget):
     import_succeeded = Signal()
+    status_changed = Signal(str)
     MODEL_INPUT_WIDTH = 220
     SEARCH_INPUT_CHARS = 50
     BUTTON_WIDTH = 140
@@ -139,7 +148,6 @@ class ImportTab(QWidget):
         self.settings_store = settings_store
         self.settings = self.settings_store.load()
         self.worker: ImportWorker | None = None
-        self.progress_dialog: QProgressDialog | None = None
         self._pending_skipped_files = 0
         self._refreshing_table = False
         self.search_timer = QTimer(self)
@@ -243,9 +251,6 @@ class ImportTab(QWidget):
         self.summary_label = QLabel()
         layout.addWidget(self.summary_label)
 
-        self.status_label = QLabel("Ready.")
-        layout.addWidget(self.status_label)
-
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
             [
@@ -296,7 +301,7 @@ class ImportTab(QWidget):
             ]
             if not selected_paths:
                 self._pending_skipped_files = 0
-                self.status_label.setText(
+                self.status_changed.emit(
                     f"Skipped {skipped_files} already imported PDF(s)."
                 )
                 return
@@ -309,8 +314,8 @@ class ImportTab(QWidget):
         )
 
         self._set_busy(True)
-        self.status_label.setText(initial_message)
-        self._show_progress_dialog(initial_message)
+        self.status_changed.emit(initial_message)
+        self._show_loading_overlay(initial_message)
         QApplication.processEvents()
         self._pending_skipped_files = skipped_files
 
@@ -330,6 +335,11 @@ class ImportTab(QWidget):
     def refresh_table(self, _text: str | None = None) -> None:
         search_text = self.search_input.text().strip()
         selected_year = self.current_year()
+        
+        # Show overlay for table refresh as it can be slow with many items
+        self._show_loading_overlay("Updating table...")
+        QApplication.processEvents()
+
         rows = self.database.fetch_line_items(
             self.table_limit,
             search_text=search_text or None,
@@ -337,9 +347,13 @@ class ImportTab(QWidget):
         )
         self._refreshing_table = True
         self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(False)
+        self.table.blockSignals(True)
         self.table.setRowCount(len(rows))
 
         for row_index, row in enumerate(rows):
+            if row_index % 50 == 0:
+                QApplication.processEvents()
             values = [
                 row["booking_date"],
                 row["description"],
@@ -373,9 +387,12 @@ class ImportTab(QWidget):
                     item.setToolTip(row["file_path"])
                 self.table.setItem(row_index, column_index, item)
 
+        self.table.blockSignals(False)
+        self.table.setUpdatesEnabled(True)
         self.table.setSortingEnabled(True)
         self._refreshing_table = False
         total_items = self.database.count_line_items(year=selected_year)
+        total_files = self.database.count_documents(year=selected_year)
         scope_label = (
             f"Year {selected_year}"
             if selected_year is not None
@@ -387,7 +404,7 @@ class ImportTab(QWidget):
                 year=selected_year,
             )
             summary = (
-                f"{scope_label}: {total_items} imported line items. "
+                f"{scope_label}: {total_items} line items across {total_files} file(s). "
                 f"Found {matching_items} match(es)"
             )
             if matching_items > len(rows):
@@ -395,8 +412,9 @@ class ImportTab(QWidget):
             else:
                 summary += "."
         else:
-            summary = f"{scope_label}: {total_items} imported line items."
+            summary = f"{scope_label}: {total_items} line items across {total_files} file(s)."
         self.summary_label.setText(summary)
+        self._hide_loading_overlay()
 
     def refresh_years(self) -> None:
         years = self.database.fetch_available_years()
@@ -462,7 +480,7 @@ class ImportTab(QWidget):
             self._refreshing_table = True
             item.setText(normalized_value)
             self._refreshing_table = False
-        self.status_label.setText("Category saved.")
+        self.status_changed.emit("Category saved.")
         self.import_succeeded.emit()
 
     def _handle_success(
@@ -472,7 +490,6 @@ class ImportTab(QWidget):
         skipped_files: int,
     ) -> None:
         self._set_busy(False)
-        self._close_progress_dialog()
         total_skipped_files = skipped_files + self._pending_skipped_files
         self._pending_skipped_files = 0
 
@@ -481,16 +498,19 @@ class ImportTab(QWidget):
         )
         if total_skipped_files:
             message += f" Skipped {total_skipped_files} already imported PDF(s)."
-        self.status_label.setText(message)
+        
+        self.status_changed.emit(message)
         if imported_files:
             self.refresh_years()
             self.import_succeeded.emit()
+        
+        self._hide_loading_overlay()
 
     def _handle_failure(self, message: str) -> None:
         self._set_busy(False)
-        self._close_progress_dialog()
+        self._hide_loading_overlay()
         self._pending_skipped_files = 0
-        self.status_label.setText(f"Import failed: {message}")
+        self.status_changed.emit(f"Import failed: {message}")
         QMessageBox.critical(self, "Import failed", message)
 
     def _set_busy(self, busy: bool) -> None:
@@ -532,28 +552,21 @@ class ImportTab(QWidget):
             Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
         )
 
-    def _show_progress_dialog(self, message: str) -> None:
-        dialog = QProgressDialog(message, "", 0, 0, self)
-        dialog.setWindowTitle("Importing PDFs")
-        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
-        dialog.setMinimumDuration(0)
-        dialog.setCancelButton(None)
-        dialog.setAutoClose(False)
-        dialog.setAutoReset(False)
-        dialog.show()
-        self.progress_dialog = dialog
+    def _show_loading_overlay(self, message: str) -> None:
+        window = self.window()
+        if hasattr(window, "show_overlay"):
+            window.show_overlay(message)
 
     def _update_progress(self, message: str) -> None:
-        self.status_label.setText(message)
-        if self.progress_dialog is not None:
-            self.progress_dialog.setLabelText(message)
+        self.status_changed.emit(message)
+        window = self.window()
+        if hasattr(window, "show_overlay"):
+            window.show_overlay(message)
 
-    def _close_progress_dialog(self) -> None:
-        if self.progress_dialog is None:
-            return
-        self.progress_dialog.close()
-        self.progress_dialog.deleteLater()
-        self.progress_dialog = None
+    def _hide_loading_overlay(self) -> None:
+        window = self.window()
+        if hasattr(window, "hide_overlay"):
+            window.hide_overlay()
 
 
 class MainWindow(QMainWindow):
@@ -586,16 +599,40 @@ class MainWindow(QMainWindow):
         self.import_tab = ImportTab(self.database, self.settings_store)
         self.report_tab = InOutReportTab(self.database, self.settings_store)
         self.import_tab.import_succeeded.connect(self._refresh_reports_after_data_change)
+        self.import_tab.status_changed.connect(self._update_status_message)
+        self.report_tab.status_changed.connect(self._update_status_message)
 
         self.tabs.addTab(self.import_tab, "Import")
         self.tabs.addTab(self.report_tab, "In/Out")
 
+        self.status_bar = QFrame()
+        self.status_bar.setFrameShape(QFrame.Shape.StyledPanel)
+        self.status_bar.setFixedHeight(32)
+        status_layout = QHBoxLayout(self.status_bar)
+        status_layout.setContentsMargins(12, 0, 12, 0)
+        self.status_label = QLabel("Ready.")
+        status_layout.addWidget(self.status_label)
+        layout.addWidget(self.status_bar)
+        
+        self.loading_overlay = LoadingOverlay(self)
+
+    def show_overlay(self, message: str) -> None:
+        self.loading_overlay.show_with_message(message)
+
+    def hide_overlay(self) -> None:
+        self.loading_overlay.hide_overlay()
+
+    def _update_status_message(self, message: str) -> None:
+        self.status_label.setText(message)
+
     def _refresh_reports_after_data_change(self) -> None:
-        source_message = self.import_tab.status_label.text().strip() or "Data updated."
-        self.import_tab.status_label.setText(f"{source_message} Recalculating reports...")
+        source_message = self.status_label.text().strip() or "Data updated."
+        self._update_status_message(f"{source_message} Recalculating reports...")
+        self.show_overlay("Recalculating reports...")
         QApplication.processEvents()
         self.report_tab.refresh_years()
-        self.import_tab.status_label.setText(f"{source_message} Reports updated.")
+        self.hide_overlay()
+        self._update_status_message(f"{source_message} Reports updated.")
 
 
 def main() -> None:

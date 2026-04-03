@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+from typing import Callable
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -16,7 +17,7 @@ Return every real transaction exactly once.
 Ignore page headers, page footers, balances, summaries, carry-over amounts, legal text, and account metadata.
 Use ISO dates in YYYY-MM-DD format.
 Use signed amounts in euro cents. Money leaving the account must be negative. Money entering the account must be positive.
-Use short lowercase categories like groceries, salary, rent, transport, transfer, shopping, fees, insurance, utilities, cash, taxes, health, or entertainment. Use null when unclear.
+Use short lowercase categories like groceries, salary, rent, transport, transfer, travel, shopping, fees, insurance, utilities, cash, taxes, health, entertainment, hifi, sports. Use null when unclear.
 """
 
 USER_PROMPT = """Extract all booked transaction line items from the attached ING Girokonto PDF.
@@ -65,16 +66,27 @@ class PdfImportService:
         self.api_key = api_key
         self.extra_rules = extra_rules
 
-    def import_pdf(self, pdf_path: Path, *, reimport: bool = False) -> int | None:
+    def import_pdf(
+        self,
+        pdf_path: Path,
+        *,
+        reimport: bool = False,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> int | None:
         if not reimport and self.db.has_document_file_name(pdf_path.name):
             return None
 
+        if on_progress:
+            on_progress(f"Encoding {pdf_path.name}...")
         pdf_data_url = encode_pdf_data_url(pdf_path)
 
+        if on_progress:
+            on_progress(f"Analyzing {pdf_path.name} with AI...")
         parsed = self._extract_line_items(
             file_name=pdf_path.name,
             pdf_data_url=pdf_data_url,
         )
+
         self.db.save_import(
             document_key=f"filename:{pdf_path.name}",
             file_name=pdf_path.name,
@@ -82,6 +94,7 @@ class PdfImportService:
             source_text="Imported via Responses API input_file.",
             model_name=self.model_name,
             line_items=parsed,
+            on_progress=on_progress,
         )
         return len(parsed)
 

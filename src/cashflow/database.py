@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +56,12 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_line_items_booking_date
                 ON line_items(booking_date);
 
+                CREATE INDEX IF NOT EXISTS idx_line_items_category
+                ON line_items(category);
+
+                CREATE INDEX IF NOT EXISTS idx_line_items_amount_cents
+                ON line_items(amount_cents);
+
                 CREATE INDEX IF NOT EXISTS idx_documents_file_name
                 ON documents(file_name);
                 """
@@ -74,17 +80,22 @@ class Database:
         source_text: str,
         model_name: str,
         line_items: list[StoredLineItem],
+        on_progress: Callable[[str], None] | None = None,
     ) -> int:
         imported_at = _utc_now()
         created_at = _utc_now()
 
         with self._connect() as connection:
+            if on_progress:
+                on_progress(f"Checking existing data for {file_name}...")
             existing = connection.execute(
                 "SELECT id FROM documents WHERE file_name = ?",
                 (file_name,),
             ).fetchone()
 
             if existing is None:
+                if on_progress:
+                    on_progress(f"Creating document entry for {file_name}...")
                 cursor = connection.execute(
                     """
                     INSERT INTO documents (
@@ -108,6 +119,8 @@ class Database:
                 document_id = int(cursor.lastrowid)
             else:
                 document_id = int(existing["id"])
+                if on_progress:
+                    on_progress(f"Updating document entry for {file_name}...")
                 connection.execute(
                     """
                     UPDATE documents
@@ -129,11 +142,33 @@ class Database:
                         document_id,
                     ),
                 )
+                if on_progress:
+                    on_progress(f"Clearing old transactions for {file_name}...")
                 connection.execute(
                     "DELETE FROM line_items WHERE document_id = ?",
                     (document_id,),
                 )
 
+            if on_progress:
+                on_progress(f"Saving {len(line_items)} transactions for {file_name}...")
+            
+            # Pre-calculate tuples for executemany to avoid overhead during the insert
+            insert_data = [
+                (
+                    document_id,
+                    item.sequence_no,
+                    item.booking_date,
+                    item.value_date,
+                    item.description,
+                    item.raw_text,
+                    item.amount_cents,
+                    item.currency,
+                    item.category,
+                    created_at,
+                )
+                for item in line_items
+            ]
+            
             connection.executemany(
                 """
                 INSERT INTO line_items (
@@ -149,21 +184,7 @@ class Database:
                     created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [
-                    (
-                        document_id,
-                        item.sequence_no,
-                        item.booking_date,
-                        item.value_date,
-                        item.description,
-                        item.raw_text,
-                        item.amount_cents,
-                        item.currency,
-                        item.category,
-                        created_at,
-                    )
-                    for item in line_items
-                ],
+                insert_data,
             )
 
         return document_id
@@ -188,6 +209,23 @@ class Database:
                 FROM line_items
                 {where_sql}
                 """,
+                parameters,
+            ).fetchone()
+        return int(row["total"])
+
+    def count_documents(self, *, year: int | None = None) -> int:
+        where_sql = ""
+        parameters = []
+        if year is not None:
+            where_sql = (
+                "WHERE id IN (SELECT DISTINCT document_id FROM line_items "
+                "WHERE SUBSTR(booking_date, 1, 4) = ?)"
+            )
+            parameters.append(str(year))
+        
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT COUNT(*) AS total FROM documents {where_sql}",
                 parameters,
             ).fetchone()
         return int(row["total"])
@@ -297,8 +335,15 @@ class Database:
             ).fetchall()
         return [str(row["category"]) for row in rows]
 
-    def fetch_category_totals(self, year: int, *, inflow: bool) -> list[sqlite3.Row]:
+    def fetch_category_totals(self, year: int | None, *, inflow: bool) -> list[sqlite3.Row]:
         comparator = ">" if inflow else "<"
+        where_clauses = [f"amount_cents {comparator} 0"]
+        parameters = []
+        if year is not None:
+            where_clauses.append("SUBSTR(booking_date, 1, 4) = ?")
+            parameters.append(str(year))
+        
+        where_sql = " AND ".join(where_clauses)
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
@@ -306,36 +351,51 @@ class Database:
                     COALESCE(NULLIF(TRIM(category), ''), 'uncategorized') AS category,
                     ABS(SUM(amount_cents)) AS total_amount_cents
                 FROM line_items
-                WHERE SUBSTR(booking_date, 1, 4) = ?
-                  AND amount_cents {comparator} 0
+                WHERE {where_sql}
                 GROUP BY COALESCE(NULLIF(TRIM(category), ''), 'uncategorized')
                 ORDER BY total_amount_cents DESC, category ASC
                 """,
-                (str(year),),
+                parameters,
             ).fetchall()
         return rows
 
-    def fetch_active_month_count(self, year: int) -> int:
+    def fetch_active_month_count(self, year: int | None) -> int:
+        where_clauses = ["booking_date GLOB '????-??-??'"]
+        parameters = []
+        if year is not None:
+            where_clauses.append("SUBSTR(booking_date, 1, 4) = ?")
+            parameters.append(str(year))
+        
+        where_sql = " AND ".join(where_clauses)
         with self._connect() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT COUNT(DISTINCT SUBSTR(booking_date, 1, 7)) AS month_count
                 FROM line_items
-                WHERE SUBSTR(booking_date, 1, 4) = ?
-                  AND booking_date GLOB '????-??-??'
+                WHERE {where_sql}
                 """,
-                (str(year),),
+                parameters,
             ).fetchone()
         return int(row["month_count"])
 
     def fetch_line_items_for_category(
         self,
-        year: int,
+        year: int | None,
         *,
         inflow: bool,
         category: str,
     ) -> list[sqlite3.Row]:
         comparator = ">" if inflow else "<"
+        where_clauses = [
+            f"line_items.amount_cents {comparator} 0",
+            "COALESCE(NULLIF(TRIM(line_items.category), ''), 'uncategorized') = ?"
+        ]
+        parameters = [category]
+        if year is not None:
+            where_clauses.append("SUBSTR(line_items.booking_date, 1, 4) = ?")
+            parameters.append(str(year))
+            
+        where_sql = " AND ".join(where_clauses)
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
@@ -349,12 +409,10 @@ class Database:
                     documents.file_path
                 FROM line_items
                 INNER JOIN documents ON documents.id = line_items.document_id
-                WHERE SUBSTR(line_items.booking_date, 1, 4) = ?
-                  AND line_items.amount_cents {comparator} 0
-                  AND COALESCE(NULLIF(TRIM(line_items.category), ''), 'uncategorized') = ?
+                WHERE {where_sql}
                 ORDER BY line_items.booking_date DESC, line_items.id DESC
                 """,
-                (str(year), category),
+                parameters,
             ).fetchall()
         return rows
 
@@ -363,6 +421,8 @@ class Database:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
         try:
             yield connection
             connection.commit()

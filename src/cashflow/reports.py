@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QRectF, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFontMetrics, QMouseEvent, QPainter, QPen
-from PySide6.QtWidgets import QButtonGroup, QSizePolicy
+from PySide6.QtWidgets import QApplication, QButtonGroup, QSizePolicy
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -231,6 +231,7 @@ class HorizontalBarChartWidget(QWidget):
 
 
 class InOutReportTab(QWidget):
+    status_changed = Signal(str)
     DOCUMENT_COLUMN = 3
     EXCLUDED_BAR_COLOR = "#9ca3af"
     DEFAULT_OUTFLOW_BAR_COLOR = "#c05621"
@@ -362,55 +363,57 @@ class InOutReportTab(QWidget):
 
         self.year_selector.blockSignals(True)
         self.year_selector.clear()
+        self.year_selector.addItem("All years", None)
         for year in years:
             self.year_selector.addItem(str(year), year)
         self.year_selector.blockSignals(False)
 
-        if not years:
-            self._clear_report()
-            return
-
         if current_year in years:
-            self.year_selector.setCurrentIndex(years.index(current_year))
+            target_index = self.year_selector.findData(current_year)
+            self.year_selector.setCurrentIndex(max(0, target_index))
         else:
             self.year_selector.setCurrentIndex(0)
         self.refresh_report()
 
     def refresh_report(self) -> None:
         year = self.current_year()
-        if year is None:
-            self._clear_report()
-            return
 
         active_month_count = max(1, self.database.fetch_active_month_count(year))
         inflows = self.database.fetch_category_totals(year, inflow=True)
         outflows = self.database.fetch_category_totals(year, inflow=False)
 
-        inflow_rows = [
-            ChartRow(
-                category=row["category"],
-                amount_cents=self._display_amount_cents(
-                    int(row["total_amount_cents"]),
-                    active_month_count,
-                ),
+        inflow_rows = []
+        for row in inflows:
+            inflow_rows.append(
+                ChartRow(
+                    category=row["category"],
+                    amount_cents=self._display_amount_cents(
+                        int(row["total_amount_cents"]),
+                        active_month_count,
+                    ),
+                )
             )
-            for row in inflows
-        ]
-        outflow_rows = [
-            ChartRow(
-                category=row["category"],
-                amount_cents=self._display_amount_cents(
-                    int(row["total_amount_cents"]),
-                    active_month_count,
-                ),
-                color=(
-                    self.EXCLUDED_BAR_COLOR
-                    if row["category"] in self.excluded_outflow_categories
-                    else None
-                ),
+
+        QApplication.processEvents()
+        
+        outflow_rows = []
+        for row in outflows:
+            outflow_rows.append(
+                ChartRow(
+                    category=row["category"],
+                    amount_cents=self._display_amount_cents(
+                        int(row["total_amount_cents"]),
+                        active_month_count,
+                    ),
+                    color=(
+                        self.EXCLUDED_BAR_COLOR
+                        if row["category"] in self.excluded_outflow_categories
+                        else None
+                    ),
+                )
             )
-            for row in outflows
-        ]
+
+        QApplication.processEvents()
 
         self.current_inflow_categories = [row.category for row in inflow_rows]
         self.current_outflow_categories = [row.category for row in outflow_rows]
@@ -448,6 +451,7 @@ class InOutReportTab(QWidget):
             self.selected_flow = None
             self.selected_category = None
             self._clear_detail_rows("Click a bar or label to show matching line items.")
+        QApplication.processEvents()
 
     def current_year(self) -> int | None:
         value = self.year_selector.currentData()
@@ -470,17 +474,16 @@ class InOutReportTab(QWidget):
         self._load_detail_rows(self.current_year(), inflow=False, category=self.selected_category)
 
     def _load_detail_rows(self, year: int | None, *, inflow: bool, category: str) -> None:
-        if year is None:
-            self._clear_detail_rows("No year selected.")
-            return
-
         rows = self.database.fetch_line_items_for_category(
             year,
             inflow=inflow,
             category=category,
         )
+        self.details_table.setUpdatesEnabled(False)
         self.details_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
+            if row_index % 50 == 0:
+                QApplication.processEvents()
             values = [
                 row["booking_date"],
                 row["description"],
@@ -506,10 +509,12 @@ class InOutReportTab(QWidget):
                     item.setData(Qt.ItemDataRole.UserRole, row["file_path"])
                     item.setToolTip(row["file_path"])
                 self.details_table.setItem(row_index, column_index, item)
+        self.details_table.setUpdatesEnabled(True)
 
         flow_label = "Inflows" if inflow else "Outflows"
+        year_label = f"in {year}" if year is not None else "for all years"
         self.selection_label.setText(
-            f"{flow_label} in {year} for category '{category}' ({len(rows)} item(s))"
+            f"{flow_label} {year_label} for category '{category}' ({len(rows)} item(s))"
         )
 
     def _clear_report(self) -> None:
@@ -539,7 +544,7 @@ class InOutReportTab(QWidget):
         if not document_path:
             return
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(document_path))):
-            self.selection_label.setText(f"Could not open document: {document_path}")
+            self.status_changed.emit(f"Could not open document: {document_path}")
 
     def _wrap_chart_panel(
         self,
@@ -626,7 +631,10 @@ class InOutReportTab(QWidget):
         )
 
     def _mode_title_suffix(self) -> str:
-        return "Average Monthly" if self.report_mode == "average" else "Total"
+        year = self.current_year()
+        year_suffix = f"Year {year}" if year is not None else "All years"
+        mode_suffix = "Average Monthly" if self.report_mode == "average" else "Total"
+        return f"{year_suffix}, {mode_suffix}"
 
     def _flow_label(self, base_label: str) -> str:
         if self.report_mode == "average":
