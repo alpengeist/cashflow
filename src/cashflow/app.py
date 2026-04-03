@@ -7,7 +7,8 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import QThread, Qt, Signal
+from PySide6.QtCore import QThread, QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 if __package__ in {None, ""}:
@@ -90,38 +92,96 @@ class ImportWorker(QThread):
 
 class ImportTab(QWidget):
     import_succeeded = Signal()
+    MODEL_INPUT_WIDTH = 220
+    SEARCH_INPUT_CHARS = 50
+    BUTTON_WIDTH = 140
+    CONTROLS_MARGIN = 10
+    DOCUMENT_COLUMN = 5
 
     def __init__(self, database: Database, settings_store: SettingsStore) -> None:
         super().__init__()
+        self.table_limit = 500
+        self.search_debounce_ms = 300
         self.db_path = APP_ROOT / "cashflow.db"
         self.database = database
         self.settings_store = settings_store
         self.settings = self.settings_store.load()
         self.worker: ImportWorker | None = None
         self.progress_dialog: QProgressDialog | None = None
+        self.search_timer = QTimer(self)
+        self.search_timer.setSingleShot(True)
+        self.search_timer.setInterval(self.search_debounce_ms)
+        self.search_timer.timeout.connect(self.refresh_table)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(12)
 
-        self.api_key_label = QLabel()
-        self._refresh_api_key_status()
-        layout.addWidget(self.api_key_label)
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(0)
+        layout.addLayout(header_row)
 
-        controls = QHBoxLayout()
-        controls.setSpacing(10)
-        layout.addLayout(controls)
+        self.import_button = QPushButton("Import PDFs")
+        self.import_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.import_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #2563eb;
+                color: white;
+                border: 1px solid #1d4ed8;
+                border-radius: 6px;
+                padding: 6px 12px;
+            }
+            QPushButton:hover {
+                background-color: #1d4ed8;
+            }
+            QPushButton:pressed {
+                background-color: #1e40af;
+            }
+            QPushButton:disabled {
+                background-color: #93c5fd;
+                border-color: #93c5fd;
+                color: #eff6ff;
+            }
+            """
+        )
+        self.import_button.clicked.connect(self.import_pdfs)
+        header_row.addWidget(self.import_button)
+        header_row.addStretch(1)
+
+        controls_row = QWidget()
+        controls_row.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
+        controls = QHBoxLayout(controls_row)
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(self.CONTROLS_MARGIN)
+        layout.addWidget(
+            controls_row,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
 
         controls.addWidget(QLabel("Model"))
         self.model_input = QLineEdit(self.settings.openai_model or "gpt-4o-mini")
         self.model_input.setPlaceholderText("gpt-4o-mini")
-        self.model_input.setMaximumWidth(220)
+        self.model_input.setFixedWidth(self.MODEL_INPUT_WIDTH)
         controls.addWidget(self.model_input)
 
-        self.import_button = QPushButton("Import PDFs")
-        self.import_button.clicked.connect(self.import_pdfs)
-        controls.addWidget(self.import_button)
-        controls.addStretch(1)
+        controls.addWidget(QLabel("Search"))
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Filter descriptions")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setFixedWidth(
+            self.search_input.fontMetrics().horizontalAdvance(
+                "M" * self.SEARCH_INPUT_CHARS
+            )
+            + 24
+        )
+        self.search_input.textChanged.connect(self._schedule_search_refresh)
+        self.search_input.returnPressed.connect(self._run_search_now)
+        controls.addWidget(self.search_input)
 
         self.rules_toggle = QToolButton()
         self.rules_toggle.setText("Extra Categorization Rules")
@@ -181,6 +241,7 @@ class ImportTab(QWidget):
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
+        self.table.cellClicked.connect(self._handle_table_click)
         layout.addWidget(self.table, stretch=1)
 
         self.refresh_table()
@@ -202,7 +263,6 @@ class ImportTab(QWidget):
 
         self._set_busy(True)
         self.status_label.setText("Preparing import...")
-        self._refresh_api_key_status()
         self._show_progress_dialog("Preparing import...")
 
         self.worker = ImportWorker(
@@ -217,8 +277,12 @@ class ImportTab(QWidget):
         self.worker.failed.connect(self._handle_failure)
         self.worker.start()
 
-    def refresh_table(self) -> None:
-        rows = self.database.fetch_line_items()
+    def refresh_table(self, _text: str | None = None) -> None:
+        search_text = self.search_input.text().strip()
+        rows = self.database.fetch_line_items(
+            self.table_limit,
+            search_text=search_text or None,
+        )
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
 
@@ -240,12 +304,51 @@ class ImportTab(QWidget):
                             | Qt.AlignmentFlag.AlignVCenter
                         )
                     )
+                if column_index == self.DOCUMENT_COLUMN:
+                    item.setData(Qt.ItemDataRole.UserRole, row["file_path"])
+                    item.setToolTip(row["file_path"])
                 self.table.setItem(row_index, column_index, item)
 
         self.table.setSortingEnabled(True)
-        self.summary_label.setText(
-            f"Database: {self.database.count_line_items()} imported line items"
-        )
+        total_items = self.database.count_line_items()
+        if search_text:
+            matching_items = self.database.count_line_items(search_text)
+            summary = (
+                f"Database: {total_items} imported line items. "
+                f"Found {matching_items} match(es)"
+            )
+            if matching_items > len(rows):
+                summary += f", showing first {len(rows)}."
+            else:
+                summary += "."
+        else:
+            summary = f"Database: {total_items} imported line items"
+            if total_items > len(rows):
+                summary += f", showing latest {len(rows)}."
+        self.summary_label.setText(summary)
+
+    def _schedule_search_refresh(self, _text: str) -> None:
+        self.search_timer.start()
+
+    def _run_search_now(self) -> None:
+        self.search_timer.stop()
+        self.refresh_table()
+
+    def _handle_table_click(self, row: int, column: int) -> None:
+        if column != self.DOCUMENT_COLUMN:
+            return
+        item = self.table.item(row, column)
+        if item is None:
+            return
+        document_path = item.data(Qt.ItemDataRole.UserRole)
+        if not document_path:
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(document_path))):
+            QMessageBox.warning(
+                self,
+                "Open document failed",
+                f"Could not open:\n{document_path}",
+            )
 
     def _handle_success(self, message: str) -> None:
         self._set_busy(False)
@@ -265,14 +368,6 @@ class ImportTab(QWidget):
         self.model_input.setEnabled(not busy)
         self.rules_toggle.setEnabled(not busy)
         self.rules_editor.setEnabled(not busy)
-
-    def _refresh_api_key_status(self) -> None:
-        if self.settings.openai_api_key:
-            self.api_key_label.setText("OpenAI API key loaded from settings.")
-        else:
-            self.api_key_label.setText(
-                "OpenAI API key is missing in ~/.cashflow/settings.toml."
-            )
 
     def _get_initial_pdf_directory(self) -> Path:
         if self.settings.last_pdf_directory:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QMouseEvent, QPainter, QPen
+from PySide6.QtCore import QRectF, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFontMetrics, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QButtonGroup, QSizePolicy
 from PySide6.QtWidgets import (
     QComboBox,
@@ -172,6 +172,8 @@ class HorizontalBarChartWidget(QWidget):
 
 
 class InOutReportTab(QWidget):
+    DOCUMENT_COLUMN = 4
+
     def __init__(self, database: Database) -> None:
         super().__init__()
         self.database = database
@@ -270,6 +272,7 @@ class InOutReportTab(QWidget):
         details_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         details_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.details_table.setAlternatingRowColors(True)
+        self.details_table.cellClicked.connect(self._handle_details_table_click)
         details_layout.addWidget(self.details_table, stretch=1)
 
         splitter.setStretchFactor(0, 1)
@@ -402,6 +405,9 @@ class InOutReportTab(QWidget):
                             | Qt.AlignmentFlag.AlignVCenter
                         )
                     )
+                if column_index == self.DOCUMENT_COLUMN:
+                    item.setData(Qt.ItemDataRole.UserRole, row["file_path"])
+                    item.setToolTip(row["file_path"])
                 self.details_table.setItem(row_index, column_index, item)
 
         flow_label = "Inflows" if inflow else "Outflows"
@@ -424,6 +430,18 @@ class InOutReportTab(QWidget):
     def _clear_detail_rows(self, message: str) -> None:
         self.details_table.setRowCount(0)
         self.selection_label.setText(message)
+
+    def _handle_details_table_click(self, row: int, column: int) -> None:
+        if column != self.DOCUMENT_COLUMN:
+            return
+        item = self.details_table.item(row, column)
+        if item is None:
+            return
+        document_path = item.data(Qt.ItemDataRole.UserRole)
+        if not document_path:
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(document_path))):
+            self.selection_label.setText(f"Could not open document: {document_path}")
 
     def _wrap_chart_panel(
         self,

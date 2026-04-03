@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Iterator
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +57,10 @@ class Database:
                 ON line_items(booking_date);
                 """
             )
+            connection.execute("DROP TRIGGER IF EXISTS line_items_search_after_insert")
+            connection.execute("DROP TRIGGER IF EXISTS line_items_search_after_delete")
+            connection.execute("DROP TRIGGER IF EXISTS line_items_search_after_update")
+            connection.execute("DROP TABLE IF EXISTS line_items_search")
 
     def save_import(
         self,
@@ -143,17 +149,35 @@ class Database:
 
         return document_id
 
-    def count_line_items(self) -> int:
+    def count_line_items(self, search_text: str | None = None) -> int:
+        where_clauses, parameters = self._build_line_item_search(search_text)
+        where_sql = ""
+        if where_clauses:
+            where_sql = "WHERE " + " AND ".join(where_clauses)
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT COUNT(*) AS total FROM line_items"
+                f"""
+                SELECT COUNT(*) AS total
+                FROM line_items
+                {where_sql}
+                """,
+                parameters,
             ).fetchone()
         return int(row["total"])
 
-    def fetch_line_items(self, limit: int = 500) -> list[sqlite3.Row]:
+    def fetch_line_items(
+        self,
+        limit: int = 500,
+        *,
+        search_text: str | None = None,
+    ) -> list[sqlite3.Row]:
+        where_clauses, parameters = self._build_line_item_search(search_text)
+        where_sql = ""
+        if where_clauses:
+            where_sql = "WHERE " + " AND ".join(where_clauses)
         with self._connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT
                     line_items.booking_date,
                     line_items.value_date,
@@ -161,13 +185,15 @@ class Database:
                     line_items.amount_cents,
                     line_items.currency,
                     line_items.category,
-                    documents.file_name
+                    documents.file_name,
+                    documents.file_path
                 FROM line_items
                 INNER JOIN documents ON documents.id = line_items.document_id
+                {where_sql}
                 ORDER BY line_items.booking_date DESC, line_items.id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (*parameters, limit),
             ).fetchall()
         return rows
 
@@ -231,7 +257,8 @@ class Database:
                     line_items.amount_cents,
                     line_items.currency,
                     COALESCE(NULLIF(TRIM(line_items.category), ''), 'uncategorized') AS category,
-                    documents.file_name
+                    documents.file_name,
+                    documents.file_path
                 FROM line_items
                 INNER JOIN documents ON documents.id = line_items.document_id
                 WHERE SUBSTR(line_items.booking_date, 1, 4) = ?
@@ -243,11 +270,42 @@ class Database:
             ).fetchall()
         return rows
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _build_line_item_search(
+        self,
+        search_text: str | None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        normalized = " ".join((search_text or "").split())
+        if not normalized:
+            return (), ()
+
+        tokens = normalized.split()
+        where_clauses = tuple("LOWER(line_items.description) LIKE ? ESCAPE '\\'" for _ in tokens)
+        parameters = tuple(
+            f"%{self._escape_like_pattern(token.lower())}%"
+            for token in tokens
+        )
+        return where_clauses, parameters
+
+    def _escape_like_pattern(self, value: str) -> str:
+        return (
+            value.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
 
 
 def _utc_now() -> str:
