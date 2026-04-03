@@ -38,12 +38,14 @@ if __package__ in {None, ""}:
     from cashflow.pdf_importer import PdfImportService
     from cashflow.reports import InOutReportTab
     from cashflow.settings import AppSettings, SettingsStore
+    from cashflow.table_items import NumericTableWidgetItem
 else:
     from .database import Database
     from .formatting import format_amount
     from .pdf_importer import PdfImportService
     from .reports import InOutReportTab
     from .settings import AppSettings, SettingsStore
+    from .table_items import NumericTableWidgetItem
 
 
 APP_ROOT = Path(__file__).resolve().parents[2]
@@ -113,7 +115,7 @@ class ImportTab(QWidget):
 
     def __init__(self, database: Database, settings_store: SettingsStore) -> None:
         super().__init__()
-        self.table_limit = 500
+        self.table_limit: int | None = None
         self.search_debounce_ms = 300
         self.db_path = APP_ROOT / "cashflow.db"
         self.database = database
@@ -342,7 +344,13 @@ class ImportTab(QWidget):
                 row["file_name"],
             ]
             for column_index, value in enumerate(values):
-                item = QTableWidgetItem(str(value))
+                if column_index == 2:
+                    item = NumericTableWidgetItem(
+                        str(value),
+                        int(row["amount_cents"]),
+                    )
+                else:
+                    item = QTableWidgetItem(str(value))
                 if column_index != self.CATEGORY_COLUMN:
                     item.setFlags(
                         item.flags() & ~Qt.ItemFlag.ItemIsEditable
@@ -375,9 +383,7 @@ class ImportTab(QWidget):
             else:
                 summary += "."
         else:
-            summary = f"Database: {total_items} imported line items"
-            if total_items > len(rows):
-                summary += f", showing latest {len(rows)}."
+            summary = f"Database: {total_items} imported line items."
         self.summary_label.setText(summary)
 
     def _schedule_search_refresh(self, _text: str) -> None:

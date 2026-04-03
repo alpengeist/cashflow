@@ -211,7 +211,7 @@ class Database:
 
     def fetch_line_items(
         self,
-        limit: int = 500,
+        limit: int | None = None,
         *,
         search_text: str | None = None,
     ) -> list[sqlite3.Row]:
@@ -219,6 +219,11 @@ class Database:
         where_sql = ""
         if where_clauses:
             where_sql = "WHERE " + " AND ".join(where_clauses)
+        limit_sql = ""
+        query_parameters: tuple[str | int, ...] = parameters
+        if limit is not None:
+            limit_sql = "LIMIT ?"
+            query_parameters = (*parameters, limit)
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
@@ -229,16 +234,16 @@ class Database:
                     line_items.description,
                     line_items.amount_cents,
                     line_items.currency,
-                    line_items.category,
+                    COALESCE(NULLIF(TRIM(line_items.category), ''), '') AS category,
                     documents.file_name,
                     documents.file_path
                 FROM line_items
                 INNER JOIN documents ON documents.id = line_items.document_id
                 {where_sql}
                 ORDER BY line_items.booking_date DESC, line_items.id DESC
-                LIMIT ?
+                {limit_sql}
                 """,
-                (*parameters, limit),
+                query_parameters,
             ).fetchall()
         return rows
 

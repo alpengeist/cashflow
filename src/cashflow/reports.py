@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QRectF, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFontMetrics, QMouseEvent, QPainter, QPen
-from PySide6.QtWidgets import QButtonGroup, QSizePolicy
+from PySide6.QtWidgets import QButtonGroup, QSizePolicy, QStyle
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -16,12 +16,14 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from .database import Database
 from .formatting import format_amount
+from .table_items import NumericTableWidgetItem
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +197,14 @@ class InOutReportTab(QWidget):
         self.year_selector = QComboBox()
         self.year_selector.currentIndexChanged.connect(self.refresh_report)
         controls.addWidget(self.year_selector)
+        self.refresh_button = QToolButton()
+        self.refresh_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        )
+        self.refresh_button.setAutoRaise(True)
+        self.refresh_button.setToolTip("Refresh available years and recalculate the report")
+        self.refresh_button.clicked.connect(self.refresh_years)
+        controls.addWidget(self.refresh_button)
 
         self.mode_buttons = QButtonGroup(self)
         self.mode_buttons.setExclusive(True)
@@ -397,7 +407,13 @@ class InOutReportTab(QWidget):
                 row["file_name"],
             ]
             for column_index, value in enumerate(values):
-                item = QTableWidgetItem(str(value))
+                if column_index == 2:
+                    item = NumericTableWidgetItem(
+                        str(value),
+                        abs(int(row["amount_cents"])),
+                    )
+                else:
+                    item = QTableWidgetItem(str(value))
                 if column_index == 2:
                     item.setTextAlignment(
                         int(
