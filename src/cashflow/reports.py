@@ -366,13 +366,14 @@ class InOutReportTab(QWidget):
         self.year_selector.addItem("All years", None)
         for year in years:
             self.year_selector.addItem(str(year), year)
-        self.year_selector.blockSignals(False)
 
         if current_year in years:
             target_index = self.year_selector.findData(current_year)
             self.year_selector.setCurrentIndex(max(0, target_index))
         else:
             self.year_selector.setCurrentIndex(0)
+        self.year_selector.blockSignals(False)
+
         self.refresh_report()
 
     def refresh_report(self) -> None:
