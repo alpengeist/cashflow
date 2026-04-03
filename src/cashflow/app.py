@@ -32,6 +32,10 @@ from PySide6.QtWidgets import (
     QWidget,
     QSizePolicy,
 )
+try:
+    from qt_material import apply_stylesheet as apply_qt_material_stylesheet
+except ImportError:
+    apply_qt_material_stylesheet = None
 
 if __package__ in {None, ""}:
     from cashflow.database import Database
@@ -40,6 +44,7 @@ if __package__ in {None, ""}:
     from cashflow.reports import InOutReportTab
     from cashflow.settings import AppSettings, SettingsStore
     from cashflow.table_items import NumericTableWidgetItem
+    from cashflow.ui import configure_compact_combo_box
 else:
     from .database import Database
     from .formatting import format_amount
@@ -47,61 +52,20 @@ else:
     from .reports import InOutReportTab
     from .settings import AppSettings, SettingsStore
     from .table_items import NumericTableWidgetItem
+    from .ui import configure_compact_combo_box
 
 
 APP_ROOT = Path(__file__).resolve().parents[2]
-BUTTON_STYLESHEET = """
-QPushButton,
-QToolButton {
-    background-color: #f8fafc;
-    color: #0f172a;
-    border: 1px solid #cbd5e1;
-    border-radius: 10px;
-    padding: 7px 14px;
-}
-QPushButton:hover,
-QToolButton:hover {
-    background-color: #e8f0ff;
-    border-color: #5b8cff;
-    color: #0b3aa4;
-}
-QPushButton:pressed,
-QToolButton:pressed {
-    background-color: #d7e6ff;
-    border-color: #2563eb;
-    color: #0b3aa4;
-}
-QPushButton:checked,
-QToolButton:checked {
-    background-color: #2563eb;
-    color: #ffffff;
-    border-color: #1d4ed8;
-}
-QPushButton:checked:hover,
-QToolButton:checked:hover {
-    background-color: #1d4ed8;
-    border-color: #1e40af;
-}
-QPushButton:checked:pressed,
-QToolButton:checked:pressed {
-    background-color: #1e3a8a;
-    border-color: #1e3a8a;
-}
-QPushButton:focus,
-QToolButton:focus {
-    border-color: #2563eb;
-}
-QPushButton:disabled,
-QToolButton:disabled {
-    background-color: #f1f5f9;
-    color: #94a3b8;
-    border-color: #dbe2ea;
-}
-QToolButton {
-    padding-left: 10px;
-    padding-right: 10px;
-}
-"""
+DEFAULT_QT_MATERIAL_THEME = "light_blue.xml"
+
+def apply_app_theme(app: QApplication) -> None:
+    if apply_qt_material_stylesheet is None:
+        return
+    apply_qt_material_stylesheet(
+        app,
+        theme=DEFAULT_QT_MATERIAL_THEME,
+        invert_secondary=True,
+    )
 
 
 class ImportWorker(QThread):
@@ -223,6 +187,10 @@ class ImportTab(QWidget):
 
         controls.addWidget(QLabel("Year"))
         self.year_selector = QComboBox()
+        configure_compact_combo_box(
+            self.year_selector,
+            minimum_contents_length=8,
+        )
         self.year_selector.currentIndexChanged.connect(self.refresh_table)
         controls.addWidget(self.year_selector)
 
@@ -605,9 +573,12 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
 
-        title = QLabel("Cashflow Tool")
-        title.setStyleSheet("font-size: 24px; font-weight: 700;")
-        layout.addWidget(title)
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(12)
+        layout.addLayout(header_row)
+
+        header_row.addStretch(1)
 
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, stretch=1)
@@ -625,9 +596,11 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         self.report_tab.refresh_years()
         self.import_tab.status_label.setText(f"{source_message} Reports updated.")
+
+
 def main() -> None:
     app = QApplication(sys.argv)
-    app.setStyleSheet(BUTTON_STYLESHEET)
+    apply_app_theme(app)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

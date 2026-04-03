@@ -28,6 +28,7 @@ from .database import Database
 from .formatting import format_amount
 from .settings import SettingsStore
 from .table_items import NumericTableWidgetItem
+from .ui import configure_compact_combo_box
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,10 +104,6 @@ class HorizontalBarChartWidget(QWidget):
         self.empty_message = "No data available."
         self.setFixedHeight(self.EMPTY_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setAutoFillBackground(True)
-        palette = self.palette()
-        palette.setColor(self.backgroundRole(), QColor("#ffffff"))
-        self.setPalette(palette)
 
     def set_data(self, rows: list[ChartRow], color: str) -> None:
         self.rows = rows
@@ -253,7 +250,7 @@ class InOutReportTab(QWidget):
         self.report_mode = "total"
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(12)
 
         controls = QHBoxLayout()
@@ -262,6 +259,10 @@ class InOutReportTab(QWidget):
 
         controls.addWidget(QLabel("Year"))
         self.year_selector = QComboBox()
+        configure_compact_combo_box(
+            self.year_selector,
+            minimum_contents_length=8,
+        )
         self.year_selector.currentIndexChanged.connect(self.refresh_report)
         controls.addWidget(self.year_selector)
 
@@ -299,10 +300,6 @@ class InOutReportTab(QWidget):
         splitter.addWidget(charts_scroll)
 
         charts_container = QWidget()
-        charts_container.setAutoFillBackground(True)
-        charts_palette = charts_container.palette()
-        charts_palette.setColor(charts_container.backgroundRole(), QColor("#ffffff"))
-        charts_container.setPalette(charts_palette)
         charts_scroll.setWidget(charts_container)
         charts_layout = QHBoxLayout(charts_container)
         charts_layout.setContentsMargins(0, 0, 0, 0)
@@ -552,13 +549,11 @@ class InOutReportTab(QWidget):
         panel = QFrame()
         panel.setFrameShape(QFrame.Shape.NoFrame)
         panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        panel.setStyleSheet("background: #ffffff; border: none;")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
         title = QLabel(title_text)
-        title.setStyleSheet("font-size: 16px; font-weight: 600;")
         layout.addWidget(title)
         for widget in summary_widgets:
             layout.addWidget(widget)
