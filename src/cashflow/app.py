@@ -11,6 +11,7 @@ from PySide6.QtCore import QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -50,7 +51,7 @@ APP_ROOT = Path(__file__).resolve().parents[2]
 
 class ImportWorker(QThread):
     progress = Signal(str)
-    succeeded = Signal(str)
+    succeeded = Signal(int, int, int)
     failed = Signal(str)
 
     def __init__(
@@ -61,6 +62,7 @@ class ImportWorker(QThread):
         model_name: str,
         api_key: str,
         extra_rules: str,
+        reimport: bool,
     ) -> None:
         super().__init__()
         self.pdf_paths = pdf_paths
@@ -68,6 +70,7 @@ class ImportWorker(QThread):
         self.model_name = model_name
         self.api_key = api_key
         self.extra_rules = extra_rules
+        self.reimport = reimport
 
     def run(self) -> None:
         try:
@@ -78,14 +81,23 @@ class ImportWorker(QThread):
                 self.extra_rules,
             )
             total_items = 0
+            imported_files = 0
+            skipped_files = 0
             for index, pdf_path in enumerate(self.pdf_paths, start=1):
                 self.progress.emit(
-                    f"Importing {pdf_path.name} ({index}/{len(self.pdf_paths)})..."
+                    f"Processing {pdf_path.name} ({index}/{len(self.pdf_paths)})..."
                 )
-                total_items += service.import_pdf(pdf_path)
-            self.succeeded.emit(
-                f"Imported {total_items} line items from {len(self.pdf_paths)} PDF(s)."
-            )
+                imported_count = service.import_pdf(
+                    pdf_path,
+                    reimport=self.reimport,
+                )
+                if imported_count is None:
+                    skipped_files += 1
+                    continue
+                imported_files += 1
+                total_items += imported_count
+
+            self.succeeded.emit(total_items, imported_files, skipped_files)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
 
@@ -96,6 +108,7 @@ class ImportTab(QWidget):
     SEARCH_INPUT_CHARS = 50
     BUTTON_WIDTH = 140
     CONTROLS_MARGIN = 10
+    CATEGORY_COLUMN = 4
     DOCUMENT_COLUMN = 5
 
     def __init__(self, database: Database, settings_store: SettingsStore) -> None:
@@ -108,6 +121,8 @@ class ImportTab(QWidget):
         self.settings = self.settings_store.load()
         self.worker: ImportWorker | None = None
         self.progress_dialog: QProgressDialog | None = None
+        self._pending_skipped_files = 0
+        self._refreshing_table = False
         self.search_timer = QTimer(self)
         self.search_timer.setSingleShot(True)
         self.search_timer.setInterval(self.search_debounce_ms)
@@ -148,6 +163,10 @@ class ImportTab(QWidget):
         )
         self.import_button.clicked.connect(self.import_pdfs)
         header_row.addWidget(self.import_button)
+
+        self.reimport_checkbox = QCheckBox("Re-import")
+        self.reimport_checkbox.setChecked(False)
+        header_row.addWidget(self.reimport_checkbox)
         header_row.addStretch(1)
 
         controls_row = QWidget()
@@ -242,6 +261,7 @@ class ImportTab(QWidget):
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
         self.table.cellClicked.connect(self._handle_table_click)
+        self.table.itemChanged.connect(self._handle_item_changed)
         layout.addWidget(self.table, stretch=1)
 
         self.refresh_table()
@@ -257,20 +277,45 @@ class ImportTab(QWidget):
         if not pdf_paths:
             return
 
-        self._save_last_pdf_directory(Path(pdf_paths[0]).parent)
+        selected_paths = [Path(path) for path in pdf_paths]
+        skipped_files = 0
+        if not self.reimport_checkbox.isChecked():
+            existing_file_names = self.database.fetch_existing_document_file_names(
+                path.name for path in selected_paths
+            )
+            skipped_files = sum(
+                1 for path in selected_paths if path.name in existing_file_names
+            )
+            selected_paths = [
+                path for path in selected_paths if path.name not in existing_file_names
+            ]
+            if not selected_paths:
+                self._pending_skipped_files = 0
+                self.status_label.setText(
+                    f"Skipped {skipped_files} already imported PDF(s)."
+                )
+                return
+
+        self._save_last_pdf_directory(selected_paths[0].parent)
         model_name = self.model_input.text().strip() or "gpt-4o-mini"
         self._save_openai_settings(model_name)
+        initial_message = (
+            f"Processing {selected_paths[0].name} (1/{len(selected_paths)})..."
+        )
 
         self._set_busy(True)
-        self.status_label.setText("Preparing import...")
-        self._show_progress_dialog("Preparing import...")
+        self.status_label.setText(initial_message)
+        self._show_progress_dialog(initial_message)
+        QApplication.processEvents()
+        self._pending_skipped_files = skipped_files
 
         self.worker = ImportWorker(
-            pdf_paths=[Path(path) for path in pdf_paths],
+            pdf_paths=selected_paths,
             db_path=self.db_path,
             model_name=model_name,
             api_key=self.settings.openai_api_key or "",
             extra_rules=self.rules_editor.toPlainText(),
+            reimport=self.reimport_checkbox.isChecked(),
         )
         self.worker.progress.connect(self._update_progress)
         self.worker.succeeded.connect(self._handle_success)
@@ -283,6 +328,7 @@ class ImportTab(QWidget):
             self.table_limit,
             search_text=search_text or None,
         )
+        self._refreshing_table = True
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
 
@@ -297,6 +343,10 @@ class ImportTab(QWidget):
             ]
             for column_index, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
+                if column_index != self.CATEGORY_COLUMN:
+                    item.setFlags(
+                        item.flags() & ~Qt.ItemFlag.ItemIsEditable
+                    )
                 if column_index == 2:
                     item.setTextAlignment(
                         int(
@@ -304,12 +354,15 @@ class ImportTab(QWidget):
                             | Qt.AlignmentFlag.AlignVCenter
                         )
                     )
+                if column_index == self.CATEGORY_COLUMN:
+                    item.setData(Qt.ItemDataRole.UserRole, row["id"])
                 if column_index == self.DOCUMENT_COLUMN:
                     item.setData(Qt.ItemDataRole.UserRole, row["file_path"])
                     item.setToolTip(row["file_path"])
                 self.table.setItem(row_index, column_index, item)
 
         self.table.setSortingEnabled(True)
+        self._refreshing_table = False
         total_items = self.database.count_line_items()
         if search_text:
             matching_items = self.database.count_line_items(search_text)
@@ -350,21 +403,58 @@ class ImportTab(QWidget):
                 f"Could not open:\n{document_path}",
             )
 
-    def _handle_success(self, message: str) -> None:
+    def _handle_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._refreshing_table or item.column() != self.CATEGORY_COLUMN:
+            return
+        line_item_id = item.data(Qt.ItemDataRole.UserRole)
+        if line_item_id is None:
+            return
+        try:
+            self.database.update_line_item_category(int(line_item_id), item.text())
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Save failed", str(exc))
+            self.refresh_table()
+            return
+
+        normalized_value = item.text().strip().lower()
+        if item.text() != normalized_value:
+            self._refreshing_table = True
+            item.setText(normalized_value)
+            self._refreshing_table = False
+        self.status_label.setText("Category saved.")
+        self.import_succeeded.emit()
+
+    def _handle_success(
+        self,
+        total_items: int,
+        imported_files: int,
+        skipped_files: int,
+    ) -> None:
         self._set_busy(False)
         self._close_progress_dialog()
+        total_skipped_files = skipped_files + self._pending_skipped_files
+        self._pending_skipped_files = 0
+
+        message = (
+            f"Imported {total_items} line items from {imported_files} PDF(s)."
+        )
+        if total_skipped_files:
+            message += f" Skipped {total_skipped_files} already imported PDF(s)."
         self.status_label.setText(message)
-        self.refresh_table()
-        self.import_succeeded.emit()
+        if imported_files:
+            self.refresh_table()
+            self.import_succeeded.emit()
 
     def _handle_failure(self, message: str) -> None:
         self._set_busy(False)
         self._close_progress_dialog()
+        self._pending_skipped_files = 0
         self.status_label.setText(f"Import failed: {message}")
         QMessageBox.critical(self, "Import failed", message)
 
     def _set_busy(self, busy: bool) -> None:
         self.import_button.setEnabled(not busy)
+        self.reimport_checkbox.setEnabled(not busy)
         self.model_input.setEnabled(not busy)
         self.rules_toggle.setEnabled(not busy)
         self.rules_editor.setEnabled(not busy)
@@ -447,10 +537,17 @@ class MainWindow(QMainWindow):
 
         self.import_tab = ImportTab(self.database, self.settings_store)
         self.report_tab = InOutReportTab(self.database)
-        self.import_tab.import_succeeded.connect(self.report_tab.refresh_years)
+        self.import_tab.import_succeeded.connect(self._refresh_reports_after_data_change)
 
         self.tabs.addTab(self.import_tab, "Import")
         self.tabs.addTab(self.report_tab, "In/Out")
+
+    def _refresh_reports_after_data_change(self) -> None:
+        source_message = self.import_tab.status_label.text().strip() or "Data updated."
+        self.import_tab.status_label.setText(f"{source_message} Recalculating reports...")
+        QApplication.processEvents()
+        self.report_tab.refresh_years()
+        self.import_tab.status_label.setText(f"{source_message} Reports updated.")
 def main() -> None:
     app = QApplication(sys.argv)
     window = MainWindow()

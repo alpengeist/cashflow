@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Iterable, Iterator
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +55,9 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_line_items_booking_date
                 ON line_items(booking_date);
+
+                CREATE INDEX IF NOT EXISTS idx_documents_file_name
+                ON documents(file_name);
                 """
             )
             connection.execute("DROP TRIGGER IF EXISTS line_items_search_after_insert")
@@ -65,7 +68,7 @@ class Database:
     def save_import(
         self,
         *,
-        sha256: str,
+        document_key: str,
         file_name: str,
         file_path: str,
         source_text: str,
@@ -77,8 +80,8 @@ class Database:
 
         with self._connect() as connection:
             existing = connection.execute(
-                "SELECT id FROM documents WHERE sha256 = ?",
-                (sha256,),
+                "SELECT id FROM documents WHERE file_name = ?",
+                (file_name,),
             ).fetchone()
 
             if existing is None:
@@ -93,7 +96,14 @@ class Database:
                         imported_at
                     ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (sha256, file_name, file_path, source_text, model_name, imported_at),
+                    (
+                        document_key,
+                        file_name,
+                        file_path,
+                        source_text,
+                        model_name,
+                        imported_at,
+                    ),
                 )
                 document_id = int(cursor.lastrowid)
             else:
@@ -101,14 +111,23 @@ class Database:
                 connection.execute(
                     """
                     UPDATE documents
-                    SET file_name = ?,
+                    SET sha256 = ?,
+                        file_name = ?,
                         file_path = ?,
                         source_text = ?,
                         model_name = ?,
                         imported_at = ?
                     WHERE id = ?
                     """,
-                    (file_name, file_path, source_text, model_name, imported_at, document_id),
+                    (
+                        document_key,
+                        file_name,
+                        file_path,
+                        source_text,
+                        model_name,
+                        imported_at,
+                        document_id,
+                    ),
                 )
                 connection.execute(
                     "DELETE FROM line_items WHERE document_id = ?",
@@ -165,6 +184,31 @@ class Database:
             ).fetchone()
         return int(row["total"])
 
+    def has_document_file_name(self, file_name: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM documents WHERE file_name = ? LIMIT 1",
+                (file_name,),
+            ).fetchone()
+        return row is not None
+
+    def fetch_existing_document_file_names(self, file_names: Iterable[str]) -> set[str]:
+        normalized_names = tuple(dict.fromkeys(file_names))
+        if not normalized_names:
+            return set()
+
+        placeholders = ", ".join("?" for _ in normalized_names)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT file_name
+                FROM documents
+                WHERE file_name IN ({placeholders})
+                """,
+                normalized_names,
+            ).fetchall()
+        return {str(row["file_name"]) for row in rows}
+
     def fetch_line_items(
         self,
         limit: int = 500,
@@ -179,6 +223,7 @@ class Database:
             rows = connection.execute(
                 f"""
                 SELECT
+                    line_items.id,
                     line_items.booking_date,
                     line_items.value_date,
                     line_items.description,
@@ -196,6 +241,20 @@ class Database:
                 (*parameters, limit),
             ).fetchall()
         return rows
+
+    def update_line_item_category(self, line_item_id: int, category: str | None) -> None:
+        normalized_category = (
+            category.strip().lower() if category and category.strip() else None
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE line_items
+                SET category = ?
+                WHERE id = ?
+                """,
+                (normalized_category, line_item_id),
+            )
 
     def fetch_available_years(self) -> list[int]:
         with self._connect() as connection:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 from pathlib import Path
 
 from openai import OpenAI
@@ -66,8 +65,10 @@ class PdfImportService:
         self.api_key = api_key
         self.extra_rules = extra_rules
 
-    def import_pdf(self, pdf_path: Path) -> int:
-        self.db.initialize()
+    def import_pdf(self, pdf_path: Path, *, reimport: bool = False) -> int | None:
+        if not reimport and self.db.has_document_file_name(pdf_path.name):
+            return None
+
         pdf_data_url = encode_pdf_data_url(pdf_path)
 
         parsed = self._extract_line_items(
@@ -75,7 +76,7 @@ class PdfImportService:
             pdf_data_url=pdf_data_url,
         )
         self.db.save_import(
-            sha256=sha256sum(pdf_path),
+            document_key=f"filename:{pdf_path.name}",
             file_name=pdf_path.name,
             file_path=str(pdf_path.resolve()),
             source_text="Imported via Responses API input_file.",
@@ -150,11 +151,3 @@ def build_system_prompt(extra_rules: str | None) -> str:
     if not cleaned_rules:
         return SYSTEM_PROMPT
     return f"{SYSTEM_PROMPT}\nAdditional categorization rules:\n{cleaned_rules}"
-
-
-def sha256sum(file_path: Path) -> str:
-    digest = hashlib.sha256()
-    with file_path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
