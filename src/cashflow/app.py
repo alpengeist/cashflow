@@ -130,7 +130,6 @@ class ImportWorker(QThread):
 
 
 class ImportTab(QWidget):
-    import_succeeded = Signal()
     status_changed = Signal(str)
     MODEL_INPUT_WIDTH = 220
     SEARCH_INPUT_CHARS = 50
@@ -352,8 +351,6 @@ class ImportTab(QWidget):
         self.table.setRowCount(len(rows))
 
         for row_index, row in enumerate(rows):
-            if row_index % 50 == 0:
-                QApplication.processEvents()
             values = [
                 row["booking_date"],
                 row["description"],
@@ -480,8 +477,7 @@ class ImportTab(QWidget):
             self._refreshing_table = True
             item.setText(normalized_value)
             self._refreshing_table = False
-        self.status_changed.emit("Category saved.")
-        self.import_succeeded.emit()
+        self.status_changed.emit("Data modified, reports need refresh.")
 
     def _handle_success(
         self,
@@ -498,11 +494,11 @@ class ImportTab(QWidget):
         )
         if total_skipped_files:
             message += f" Skipped {total_skipped_files} already imported PDF(s)."
-        
-        self.status_changed.emit(message)
+
         if imported_files:
-            self.refresh_years()
-            self.import_succeeded.emit()
+            message += " Reports need refresh."
+
+        self.status_changed.emit(message)
         
         self._hide_loading_overlay()
 
@@ -598,7 +594,6 @@ class MainWindow(QMainWindow):
 
         self.import_tab = ImportTab(self.database, self.settings_store)
         self.report_tab = InOutReportTab(self.database, self.settings_store)
-        self.import_tab.import_succeeded.connect(self._refresh_reports_after_data_change)
         self.import_tab.status_changed.connect(self._update_status_message)
         self.report_tab.status_changed.connect(self._update_status_message)
 
@@ -624,15 +619,6 @@ class MainWindow(QMainWindow):
 
     def _update_status_message(self, message: str) -> None:
         self.status_label.setText(message)
-
-    def _refresh_reports_after_data_change(self) -> None:
-        source_message = self.status_label.text().strip() or "Data updated."
-        self._update_status_message(f"{source_message} Recalculating reports...")
-        self.show_overlay("Recalculating reports...")
-        QApplication.processEvents()
-        self.report_tab.refresh_years()
-        self.hide_overlay()
-        self._update_status_message(f"{source_message} Reports updated.")
 
 
 def main() -> None:

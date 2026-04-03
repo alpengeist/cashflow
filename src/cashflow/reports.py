@@ -267,6 +267,10 @@ class InOutReportTab(QWidget):
         self.year_selector.currentIndexChanged.connect(self.refresh_report)
         controls.addWidget(self.year_selector)
 
+        self.refresh_button = QPushButton("Refresh Report")
+        self.refresh_button.clicked.connect(self.refresh_data)
+        controls.addWidget(self.refresh_button)
+
         self.mode_buttons = QButtonGroup(self)
         self.mode_buttons.setExclusive(True)
 
@@ -357,6 +361,11 @@ class InOutReportTab(QWidget):
         self._update_exclusion_summary()
         self.refresh_years()
 
+    def refresh_data(self) -> None:
+        self.status_changed.emit("Refreshing report...")
+        self.refresh_years()
+        self.status_changed.emit("Report refreshed.")
+
     def refresh_years(self) -> None:
         years = self.database.fetch_available_years()
         current_year = self.current_year()
@@ -395,8 +404,6 @@ class InOutReportTab(QWidget):
                 )
             )
 
-        QApplication.processEvents()
-        
         outflow_rows = []
         for row in outflows:
             outflow_rows.append(
@@ -413,8 +420,6 @@ class InOutReportTab(QWidget):
                     ),
                 )
             )
-
-        QApplication.processEvents()
 
         self.current_inflow_categories = [row.category for row in inflow_rows]
         self.current_outflow_categories = [row.category for row in outflow_rows]
@@ -452,7 +457,6 @@ class InOutReportTab(QWidget):
             self.selected_flow = None
             self.selected_category = None
             self._clear_detail_rows("Click a bar or label to show matching line items.")
-        QApplication.processEvents()
 
     def current_year(self) -> int | None:
         value = self.year_selector.currentData()
@@ -483,8 +487,6 @@ class InOutReportTab(QWidget):
         self.details_table.setUpdatesEnabled(False)
         self.details_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
-            if row_index % 50 == 0:
-                QApplication.processEvents()
             values = [
                 row["booking_date"],
                 row["description"],
