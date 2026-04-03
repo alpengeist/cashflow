@@ -28,7 +28,7 @@ from .database import Database
 from .formatting import format_amount
 from .settings import SettingsStore
 from .table_items import NumericTableWidgetItem
-from .ui import configure_compact_combo_box
+from .ui import configure_compact_combo_box, ensure_table_header_width
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +344,7 @@ class InOutReportTab(QWidget):
         details_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         details_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         details_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        ensure_table_header_width(self.details_table, 2, "Amount")
         self.details_table.setAlternatingRowColors(True)
         self.details_table.cellClicked.connect(self._handle_details_table_click)
         details_layout.addWidget(self.details_table, stretch=1)

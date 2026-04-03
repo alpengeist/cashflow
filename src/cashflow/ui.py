@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QComboBox
+from PySide6.QtWidgets import QComboBox, QTableWidget
 
 
 COMPACT_COMBO_BOX_STYLESHEET = """
@@ -25,3 +25,16 @@ def configure_compact_combo_box(
     combo_box.setSizeAdjustPolicy(
         QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     )
+
+
+def ensure_table_header_width(
+    table: QTableWidget,
+    column: int,
+    label: str,
+    *,
+    extra_padding: int = 36,
+) -> None:
+    header = table.horizontalHeader()
+    required_width = header.fontMetrics().horizontalAdvance(label) + extra_padding
+    if header.sectionSize(column) < required_width:
+        header.resizeSection(column, required_width)

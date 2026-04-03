@@ -44,7 +44,7 @@ if __package__ in {None, ""}:
     from cashflow.reports import InOutReportTab
     from cashflow.settings import AppSettings, SettingsStore
     from cashflow.table_items import NumericTableWidgetItem
-    from cashflow.ui import configure_compact_combo_box
+    from cashflow.ui import configure_compact_combo_box, ensure_table_header_width
 else:
     from .database import Database
     from .formatting import format_amount
@@ -52,7 +52,7 @@ else:
     from .reports import InOutReportTab
     from .settings import AppSettings, SettingsStore
     from .table_items import NumericTableWidgetItem
-    from .ui import configure_compact_combo_box
+    from .ui import configure_compact_combo_box, ensure_table_header_width
 
 
 APP_ROOT = Path(__file__).resolve().parents[2]
@@ -262,7 +262,7 @@ class ImportTab(QWidget):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        ensure_table_header_width(self.table, 2, "Amount")
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
         self.table.cellClicked.connect(self._handle_table_click)
