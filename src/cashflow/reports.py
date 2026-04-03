@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QRectF, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFontMetrics, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QButtonGroup, QSizePolicy
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -22,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from .database import Database
 from .formatting import format_amount
+from .settings import SettingsStore
 from .table_items import NumericTableWidgetItem
 
 
@@ -29,6 +34,57 @@ from .table_items import NumericTableWidgetItem
 class ChartRow:
     category: str
     amount_cents: int
+    color: str | None = None
+
+
+class CategorySelectionDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        categories: list[str],
+        excluded_categories: set[str],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Excluded Categories")
+        self.resize(360, 420)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        hint = QLabel("Selected categories will be excluded from 'Sum w/o excluded'.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.category_list = QListWidget()
+        for category in categories:
+            item = QListWidgetItem(category)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if category in excluded_categories
+                else Qt.CheckState.Unchecked
+            )
+            self.category_list.addItem(item)
+        layout.addWidget(self.category_list, stretch=1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_categories(self) -> tuple[str, ...]:
+        selected: list[str] = []
+        for index in range(self.category_list.count()):
+            item = self.category_list.item(index)
+            if item is None or item.checkState() != Qt.CheckState.Checked:
+                continue
+            selected.append(item.text())
+        return tuple(selected)
 
 
 class HorizontalBarChartWidget(QWidget):
@@ -58,7 +114,12 @@ class HorizontalBarChartWidget(QWidget):
         self.setFixedHeight(self._content_height())
         parent = self.parentWidget()
         if parent is not None:
-            parent.setFixedHeight(self.height() + 84)
+            summary_count = int(parent.property("summary_count") or 1)
+            parent.setFixedHeight(
+                InOutReportTab.PANEL_BASE_HEIGHT
+                + summary_count * InOutReportTab.PANEL_SUMMARY_WIDGET_HEIGHT
+                + self.height()
+            )
         self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -130,7 +191,7 @@ class HorizontalBarChartWidget(QWidget):
             painter.drawRoundedRect(bar_background_rect, 4, 4)
 
             painter.setPen(bar_pen)
-            painter.setBrush(self.bar_color)
+            painter.setBrush(QColor(row.color) if row.color else self.bar_color)
             painter.drawRoundedRect(bar_rect, 4, 4)
 
             painter.setPen(text_color)
@@ -174,10 +235,17 @@ class HorizontalBarChartWidget(QWidget):
 
 class InOutReportTab(QWidget):
     DOCUMENT_COLUMN = 3
+    EXCLUDED_BAR_COLOR = "#9ca3af"
+    DEFAULT_OUTFLOW_BAR_COLOR = "#c05621"
+    PANEL_BASE_HEIGHT = 62
+    PANEL_SUMMARY_WIDGET_HEIGHT = 24
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, settings_store: SettingsStore) -> None:
         super().__init__()
         self.database = database
+        self.settings_store = settings_store
+        self.settings = self.settings_store.load()
+        self.excluded_outflow_categories = set(self.settings.excluded_outflow_categories)
         self.selected_flow: str | None = None
         self.selected_category: str | None = None
         self.current_inflow_categories: list[str] = []
@@ -211,6 +279,13 @@ class InOutReportTab(QWidget):
         self.mode_buttons.addButton(self.average_button)
         controls.addWidget(self.average_button)
 
+        self.exclusions_button = QPushButton("Excluded Categories")
+        self.exclusions_button.clicked.connect(self._edit_excluded_categories)
+        controls.addWidget(self.exclusions_button)
+
+        self.exclusions_summary_label = QLabel()
+        controls.addWidget(self.exclusions_summary_label)
+
         self.mode_buttons.buttonClicked.connect(self._handle_mode_changed)
         controls.addStretch(1)
 
@@ -238,17 +313,18 @@ class InOutReportTab(QWidget):
         self.inflow_chart.category_selected.connect(self._handle_inflow_click)
         inflow_panel = self._wrap_chart_panel(
             "Inflows by Category",
-            self.inflow_total_label,
+            [self.inflow_total_label],
             self.inflow_chart,
         )
         charts_layout.addWidget(inflow_panel, 1, Qt.AlignmentFlag.AlignTop)
 
         self.outflow_total_label = QLabel("Outflows total: 0,00")
+        self.outflow_filtered_total_label = QLabel("Sum w/o excluded: 0,00")
         self.outflow_chart = HorizontalBarChartWidget()
         self.outflow_chart.category_selected.connect(self._handle_outflow_click)
         outflow_panel = self._wrap_chart_panel(
             "Outflows by Category",
-            self.outflow_total_label,
+            [self.outflow_total_label, self.outflow_filtered_total_label],
             self.outflow_chart,
         )
         charts_layout.addWidget(outflow_panel, 1, Qt.AlignmentFlag.AlignTop)
@@ -271,7 +347,6 @@ class InOutReportTab(QWidget):
         details_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         details_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         details_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        details_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.details_table.setAlternatingRowColors(True)
         self.details_table.cellClicked.connect(self._handle_details_table_click)
         details_layout.addWidget(self.details_table, stretch=1)
@@ -280,6 +355,7 @@ class InOutReportTab(QWidget):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([420, 260])
 
+        self._update_exclusion_summary()
         self.refresh_years()
 
     def refresh_years(self) -> None:
@@ -329,6 +405,11 @@ class InOutReportTab(QWidget):
                     int(row["total_amount_cents"]),
                     active_month_count,
                 ),
+                color=(
+                    self.EXCLUDED_BAR_COLOR
+                    if row["category"] in self.excluded_outflow_categories
+                    else None
+                ),
             )
             for row in outflows
         ]
@@ -337,7 +418,7 @@ class InOutReportTab(QWidget):
         self.current_outflow_categories = [row.category for row in outflow_rows]
 
         self.inflow_chart.set_data(inflow_rows, "#2f855a")
-        self.outflow_chart.set_data(outflow_rows, "#c05621")
+        self.outflow_chart.set_data(outflow_rows, self.DEFAULT_OUTFLOW_BAR_COLOR)
 
         mode_suffix = self._mode_title_suffix()
         self.inflow_chart_title.setText(f"Inflows by Category ({mode_suffix})")
@@ -347,6 +428,18 @@ class InOutReportTab(QWidget):
         )
         self.outflow_total_label.setText(
             f"{self._flow_label('Outflows')}: {format_amount(sum(row.amount_cents for row in outflow_rows))}"
+        )
+        filtered_outflow_year_total_cents = sum(
+            int(row["total_amount_cents"])
+            for row in outflows
+            if row["category"] not in self.excluded_outflow_categories
+        )
+        filtered_outflow_display_cents = self._display_amount_cents(
+            filtered_outflow_year_total_cents,
+            active_month_count,
+        )
+        self.outflow_filtered_total_label.setText(
+            f"Sum w/o excluded: {format_amount(filtered_outflow_display_cents)}"
         )
 
         if self.selected_flow == "inflow" and self.selected_category in self.current_inflow_categories:
@@ -429,8 +522,9 @@ class InOutReportTab(QWidget):
         self.outflow_chart_title.setText(f"Outflows by Category ({mode_suffix})")
         self.inflow_total_label.setText(f"{self._flow_label('Inflows')}: 0,00")
         self.outflow_total_label.setText(f"{self._flow_label('Outflows')}: 0,00")
+        self.outflow_filtered_total_label.setText("Sum w/o excluded: 0,00")
         self.inflow_chart.set_data([], "#2f855a")
-        self.outflow_chart.set_data([], "#c05621")
+        self.outflow_chart.set_data([], self.DEFAULT_OUTFLOW_BAR_COLOR)
         self._clear_detail_rows("No imported data available.")
 
     def _clear_detail_rows(self, message: str) -> None:
@@ -452,7 +546,7 @@ class InOutReportTab(QWidget):
     def _wrap_chart_panel(
         self,
         title_text: str,
-        total_label: QLabel,
+        summary_widgets: list[QWidget],
         chart_widget: HorizontalBarChartWidget,
     ) -> QWidget:
         panel = QFrame()
@@ -466,9 +560,11 @@ class InOutReportTab(QWidget):
         title = QLabel(title_text)
         title.setStyleSheet("font-size: 16px; font-weight: 600;")
         layout.addWidget(title)
-        layout.addWidget(total_label)
+        for widget in summary_widgets:
+            layout.addWidget(widget)
         layout.addWidget(chart_widget)
-        panel.setFixedHeight(chart_widget.height() + 84)
+        panel.setProperty("summary_count", len(summary_widgets))
+        panel.setFixedHeight(self._panel_height(chart_widget, len(summary_widgets)))
         if "Inflows" in title_text:
             self.inflow_chart_title = title
         else:
@@ -479,10 +575,59 @@ class InOutReportTab(QWidget):
         self.report_mode = "average" if self.average_button.isChecked() else "total"
         self.refresh_report()
 
+    def _edit_excluded_categories(self) -> None:
+        categories = self.database.fetch_available_outflow_categories()
+        dialog = CategorySelectionDialog(
+            categories=categories,
+            excluded_categories=self.excluded_outflow_categories,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected_categories = dialog.selected_categories()
+        self._save_excluded_categories(selected_categories)
+        self.excluded_outflow_categories = set(selected_categories)
+        self._update_exclusion_summary()
+        self.refresh_report()
+
+    def _save_excluded_categories(self, categories: tuple[str, ...]) -> None:
+        current_settings = self.settings_store.load()
+        self.settings = replace(
+            current_settings,
+            excluded_outflow_categories=categories,
+        )
+        self.settings_store.save(self.settings)
+
+    def _update_exclusion_summary(self) -> None:
+        excluded_categories = sorted(self.excluded_outflow_categories)
+        if not excluded_categories:
+            self.exclusions_summary_label.setText("No exclusions")
+            return
+        if len(excluded_categories) <= 2:
+            self.exclusions_summary_label.setText(
+                "Excluded: " + ", ".join(excluded_categories)
+            )
+            return
+        self.exclusions_summary_label.setText(
+            f"Excluded: {len(excluded_categories)} categories"
+        )
+
     def _display_amount_cents(self, total_amount_cents: int, month_count: int) -> int:
         if self.report_mode == "average":
             return round(total_amount_cents / month_count)
         return total_amount_cents
+
+    def _panel_height(
+        self,
+        chart_widget: HorizontalBarChartWidget,
+        summary_widget_count: int,
+    ) -> int:
+        return (
+            chart_widget.height()
+            + self.PANEL_BASE_HEIGHT
+            + summary_widget_count * self.PANEL_SUMMARY_WIDGET_HEIGHT
+        )
 
     def _mode_title_suffix(self) -> str:
         return "Average Monthly" if self.report_mode == "average" else "Total"

@@ -5,3 +5,4 @@ cashflow.db
 *.sqlite
 .env
 .idea/
+/cashflow - Copy.db

@@ -15,6 +15,7 @@ class AppSettings:
     openai_api_key: str | None = None
     openai_model: str | None = None
     categorization_rules: str | None = None
+    excluded_outflow_categories: tuple[str, ...] = ()
 
 
 class SettingsStore:
@@ -33,6 +34,7 @@ class SettingsStore:
 
         recent = data.get("recent", {})
         openai = data.get("openai", {})
+        report = data.get("report", {})
         return AppSettings(
             last_pdf_directory=_read_optional_string(
                 recent,
@@ -43,6 +45,10 @@ class SettingsStore:
             categorization_rules=_read_optional_string(
                 openai,
                 "categorization_rules",
+            ),
+            excluded_outflow_categories=_read_optional_string_list(
+                report,
+                "excluded_outflow_categories",
             ),
         )
 
@@ -57,6 +63,9 @@ class SettingsStore:
             f'model = "{_escape_toml_string(settings.openai_model or "")}"',
             f'categorization_rules = "{_escape_toml_string(settings.categorization_rules or "")}"',
             "",
+            "[report]",
+            f"excluded_outflow_categories = {_format_toml_string_array(settings.excluded_outflow_categories)}",
+            "",
         ]
         self.settings_path.write_text("\n".join(content), encoding="utf-8")
 
@@ -68,6 +77,27 @@ def _read_optional_string(data: dict[str, object], key: str) -> str | None:
     return value or None
 
 
+def _read_optional_string_list(
+    data: dict[str, object],
+    key: str,
+) -> tuple[str, ...]:
+    value = data.get(key)
+    if not isinstance(value, list):
+        return ()
+
+    cleaned_values: list[str] = []
+    seen_values: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        normalized_item = item.strip()
+        if not normalized_item or normalized_item in seen_values:
+            continue
+        cleaned_values.append(normalized_item)
+        seen_values.add(normalized_item)
+    return tuple(cleaned_values)
+
+
 def _escape_toml_string(value: str) -> str:
     return (
         value.replace("\\", "\\\\")
@@ -75,3 +105,10 @@ def _escape_toml_string(value: str) -> str:
         .replace("\n", "\\n")
         .replace("\t", "\\t")
     )
+
+
+def _format_toml_string_array(values: tuple[str, ...]) -> str:
+    if not values:
+        return "[]"
+    escaped_values = ", ".join(f'"{_escape_toml_string(value)}"' for value in values)
+    return f"[{escaped_values}]"

@@ -285,6 +285,18 @@ class Database:
             ).fetchall()
         return [int(row["year"]) for row in rows]
 
+    def fetch_available_outflow_categories(self) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT COALESCE(NULLIF(TRIM(category), ''), 'uncategorized') AS category
+                FROM line_items
+                WHERE amount_cents < 0
+                ORDER BY category ASC
+                """
+            ).fetchall()
+        return [str(row["category"]) for row in rows]
+
     def fetch_category_totals(self, year: int, *, inflow: bool) -> list[sqlite3.Row]:
         comparator = ">" if inflow else "<"
         with self._connect() as connection:

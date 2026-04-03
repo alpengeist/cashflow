@@ -511,16 +511,19 @@ class ImportTab(QWidget):
         return Path.home()
 
     def _save_last_pdf_directory(self, directory: Path) -> None:
-        self.settings = replace(self.settings, last_pdf_directory=str(directory))
+        current_settings = self.settings_store.load()
+        self.settings = replace(current_settings, last_pdf_directory=str(directory))
         self.settings_store.save(self.settings)
 
     def _save_openai_settings(self, model_name: str) -> None:
-        self.settings = replace(self.settings, openai_model=model_name)
+        current_settings = self.settings_store.load()
+        self.settings = replace(current_settings, openai_model=model_name)
         self.settings_store.save(self.settings)
 
     def _save_categorization_rules(self) -> None:
+        current_settings = self.settings_store.load()
         self.settings = replace(
-            self.settings,
+            current_settings,
             categorization_rules=self.rules_editor.toPlainText().strip() or None,
         )
         self.settings_store.save(self.settings)
@@ -580,7 +583,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.tabs, stretch=1)
 
         self.import_tab = ImportTab(self.database, self.settings_store)
-        self.report_tab = InOutReportTab(self.database)
+        self.report_tab = InOutReportTab(self.database, self.settings_store)
         self.import_tab.import_succeeded.connect(self._refresh_reports_after_data_change)
 
         self.tabs.addTab(self.import_tab, "Import")
