@@ -385,7 +385,7 @@ class InOutReportTab(QWidget):
 
         self.refresh_report()
 
-    def refresh_report(self) -> None:
+    def refresh_report(self, *, reload_details: bool = True) -> None:
         year = self.current_year()
 
         active_month_count = max(1, self.database.fetch_active_month_count(year))
@@ -448,6 +448,9 @@ class InOutReportTab(QWidget):
         self.outflow_filtered_total_label.setText(
             f"Sum w/o excluded: {format_amount(filtered_outflow_display_cents)}"
         )
+
+        if not reload_details:
+            return
 
         if self.selected_flow == "inflow" and self.selected_category in self.current_inflow_categories:
             self._load_detail_rows(year, inflow=True, category=self.selected_category)
@@ -577,7 +580,7 @@ class InOutReportTab(QWidget):
 
     def _handle_mode_changed(self) -> None:
         self.report_mode = "average" if self.average_button.isChecked() else "total"
-        self.refresh_report()
+        self.refresh_report(reload_details=False)
 
     def _edit_excluded_categories(self) -> None:
         categories = self.database.fetch_available_outflow_categories()
@@ -593,7 +596,7 @@ class InOutReportTab(QWidget):
         self._save_excluded_categories(selected_categories)
         self.excluded_outflow_categories = set(selected_categories)
         self._update_exclusion_summary()
-        self.refresh_report()
+        self.refresh_report(reload_details=False)
 
     def _save_excluded_categories(self, categories: tuple[str, ...]) -> None:
         current_settings = self.settings_store.load()

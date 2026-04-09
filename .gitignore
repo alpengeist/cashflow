@@ -5,4 +5,5 @@ cashflow.db
 *.sqlite
 .env
 .idea/
-/cashflow - Copy.db
+/cashflow - Copy*.db
+/.claude/settings.local.json
