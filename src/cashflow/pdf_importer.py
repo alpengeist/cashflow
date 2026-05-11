@@ -110,6 +110,7 @@ class PdfImportService:
         client = OpenAI(api_key=self.api_key)
         response = client.responses.parse(
             model=self.model_name,
+            reasoning={"effort": "low"},
             instructions=build_system_prompt(self.extra_rules),
             input=[
                 {

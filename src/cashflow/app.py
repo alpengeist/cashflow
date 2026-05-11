@@ -496,10 +496,10 @@ class ImportTab(QWidget):
             message += f" Skipped {total_skipped_files} already imported PDF(s)."
 
         if imported_files:
+            self.refresh_years()
             message += " Reports need refresh."
 
         self.status_changed.emit(message)
-        
         self._hide_loading_overlay()
 
     def _handle_failure(self, message: str) -> None:
