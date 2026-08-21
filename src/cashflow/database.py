@@ -286,7 +286,8 @@ class Database:
                     line_items.currency,
                     COALESCE(NULLIF(TRIM(line_items.category), ''), '') AS category,
                     documents.file_name,
-                    documents.file_path
+                    documents.file_path,
+                    documents.imported_at
                 FROM line_items
                 INNER JOIN documents ON documents.id = line_items.document_id
                 {where_sql}
@@ -335,13 +336,22 @@ class Database:
             ).fetchall()
         return [str(row["category"]) for row in rows]
 
-    def fetch_category_totals(self, year: int | None, *, inflow: bool) -> list[sqlite3.Row]:
+    def fetch_category_totals(
+        self,
+        year: int | None,
+        *,
+        inflow: bool,
+        month: int | None = None,
+    ) -> list[sqlite3.Row]:
         comparator = ">" if inflow else "<"
         where_clauses = [f"amount_cents {comparator} 0"]
         parameters = []
         if year is not None:
             where_clauses.append("SUBSTR(booking_date, 1, 4) = ?")
             parameters.append(str(year))
+        if month is not None:
+            where_clauses.append("SUBSTR(booking_date, 6, 2) = ?")
+            parameters.append(f"{month:02d}")
         
         where_sql = " AND ".join(where_clauses)
         with self._connect() as connection:
@@ -359,12 +369,19 @@ class Database:
             ).fetchall()
         return rows
 
-    def fetch_active_month_count(self, year: int | None) -> int:
+    def fetch_active_month_count(
+        self,
+        year: int | None,
+        month: int | None = None,
+    ) -> int:
         where_clauses = ["booking_date GLOB '????-??-??'"]
         parameters = []
         if year is not None:
             where_clauses.append("SUBSTR(booking_date, 1, 4) = ?")
             parameters.append(str(year))
+        if month is not None:
+            where_clauses.append("SUBSTR(booking_date, 6, 2) = ?")
+            parameters.append(f"{month:02d}")
         
         where_sql = " AND ".join(where_clauses)
         with self._connect() as connection:
@@ -384,6 +401,7 @@ class Database:
         *,
         inflow: bool,
         category: str,
+        month: int | None = None,
     ) -> list[sqlite3.Row]:
         comparator = ">" if inflow else "<"
         where_clauses = [
@@ -394,6 +412,9 @@ class Database:
         if year is not None:
             where_clauses.append("SUBSTR(line_items.booking_date, 1, 4) = ?")
             parameters.append(str(year))
+        if month is not None:
+            where_clauses.append("SUBSTR(line_items.booking_date, 6, 2) = ?")
+            parameters.append(f"{month:02d}")
             
         where_sql = " AND ".join(where_clauses)
         with self._connect() as connection:

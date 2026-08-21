@@ -60,10 +60,12 @@ class PdfImportService:
         model_name: str,
         api_key: str,
         extra_rules: str | None = None,
+        reasoning_effort: str = "low",
     ) -> None:
         self.db = Database(db_path)
         self.model_name = model_name
         self.api_key = api_key
+        self.reasoning_effort = reasoning_effort
         self.extra_rules = extra_rules
 
     def import_pdf(
@@ -110,7 +112,7 @@ class PdfImportService:
         client = OpenAI(api_key=self.api_key)
         response = client.responses.parse(
             model=self.model_name,
-            reasoning={"effort": "low"},
+            reasoning={"effort": self.reasoning_effort},
             instructions=build_system_prompt(self.extra_rules),
             input=[
                 {

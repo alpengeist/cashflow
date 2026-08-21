@@ -14,6 +14,7 @@ class AppSettings:
     last_pdf_directory: str | None = None
     openai_api_key: str | None = None
     openai_model: str | None = None
+    openai_reasoning_effort: str | None = None
     categorization_rules: str | None = None
     excluded_outflow_categories: tuple[str, ...] = ()
 
@@ -42,6 +43,10 @@ class SettingsStore:
             ),
             openai_api_key=_read_optional_string(openai, "api_key"),
             openai_model=_read_optional_string(openai, "model"),
+            openai_reasoning_effort=_read_optional_string(
+                openai,
+                "reasoning_effort",
+            ),
             categorization_rules=_read_optional_string(
                 openai,
                 "categorization_rules",
@@ -61,6 +66,7 @@ class SettingsStore:
             "[openai]",
             f'api_key = "{_escape_toml_string(settings.openai_api_key or "")}"',
             f'model = "{_escape_toml_string(settings.openai_model or "")}"',
+            f'reasoning_effort = "{_escape_toml_string(settings.openai_reasoning_effort or "")}"',
             f'categorization_rules = "{_escape_toml_string(settings.categorization_rules or "")}"',
             "",
             "[report]",

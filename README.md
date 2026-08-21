@@ -38,6 +38,7 @@ last_pdf_directory = "C:\\Users\\hermann\\Documents\\ING"
 [openai]
 api_key = "your_api_key_here"
 model = "gpt-4o-mini"
+reasoning_effort = "low"
 categorization_rules = "If description contains \"spotify\", categorize as \"entertainment\"."
 ```
 

@@ -10,6 +10,7 @@ if __package__ in {None, ""}:
 from PySide6.QtCore import QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -38,7 +39,7 @@ except ImportError:
 
 if __package__ in {None, ""}:
     from cashflow.database import Database
-    from cashflow.formatting import format_amount
+    from cashflow.formatting import format_amount, format_local_datetime
     from cashflow.pdf_importer import PdfImportService
     from cashflow.reports import InOutReportTab
     from cashflow.settings import SettingsStore
@@ -50,7 +51,7 @@ if __package__ in {None, ""}:
     )
 else:
     from .database import Database
-    from .formatting import format_amount
+    from .formatting import format_amount, format_local_datetime
     from .pdf_importer import PdfImportService
     from .reports import InOutReportTab
     from .settings import SettingsStore
@@ -64,6 +65,8 @@ else:
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_QT_MATERIAL_THEME = "light_blue.xml"
+DEFAULT_REASONING_EFFORT = "low"
+REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh")
 
 def apply_app_theme(app: QApplication) -> None:
     if apply_qt_material_stylesheet is None:
@@ -87,6 +90,7 @@ class ImportWorker(QThread):
         db_path: Path,
         model_name: str,
         api_key: str,
+        reasoning_effort: str,
         extra_rules: str,
         reimport: bool,
     ) -> None:
@@ -95,16 +99,18 @@ class ImportWorker(QThread):
         self.db_path = db_path
         self.model_name = model_name
         self.api_key = api_key
+        self.reasoning_effort = reasoning_effort
         self.extra_rules = extra_rules
         self.reimport = reimport
 
     def run(self) -> None:
         try:
             service = PdfImportService(
-                self.db_path,
-                self.model_name,
-                self.api_key,
-                self.extra_rules,
+                db_path=self.db_path,
+                model_name=self.model_name,
+                api_key=self.api_key,
+                extra_rules=self.extra_rules,
+                reasoning_effort=self.reasoning_effort,
             )
             total_items = 0
             imported_files = 0
@@ -136,7 +142,7 @@ class ImportTab(QWidget):
     BUTTON_WIDTH = 140
     CONTROLS_MARGIN = 10
     CATEGORY_COLUMN = 3
-    DOCUMENT_COLUMN = 4
+    DOCUMENT_COLUMN = 5
 
     def __init__(self, database: Database, settings_store: SettingsStore) -> None:
         super().__init__()
@@ -191,6 +197,26 @@ class ImportTab(QWidget):
         self.model_input.setPlaceholderText("gpt-4o-mini")
         self.model_input.setFixedWidth(self.MODEL_INPUT_WIDTH)
         controls.addWidget(self.model_input)
+
+        controls.addWidget(QLabel("Reasoning"))
+        self.reasoning_effort_selector = QComboBox()
+        self.reasoning_effort_selector.addItems(REASONING_EFFORTS)
+        configured_effort = (
+            self.settings.openai_reasoning_effort or DEFAULT_REASONING_EFFORT
+        )
+        configured_effort_index = self.reasoning_effort_selector.findText(
+            configured_effort
+        )
+        if configured_effort_index < 0:
+            configured_effort_index = self.reasoning_effort_selector.findText(
+                DEFAULT_REASONING_EFFORT
+            )
+        self.reasoning_effort_selector.setCurrentIndex(configured_effort_index)
+        configure_compact_combo_box(
+            self.reasoning_effort_selector,
+            minimum_contents_length=8,
+        )
+        controls.addWidget(self.reasoning_effort_selector)
 
         controls.addWidget(QLabel("Year"))
         self.year_selector = QComboBox()
@@ -250,22 +276,31 @@ class ImportTab(QWidget):
         self.summary_label = QLabel()
         layout.addWidget(self.summary_label)
 
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
             [
                 "Booked",
                 "Description",
                 "Amount",
                 "Category",
+                "Imported",
                 "Document",
             ]
         )
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setColumnWidth(1, 520)
+        self.table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.table.setHorizontalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
         ensure_table_header_width(self.table, 2, "Amount")
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
@@ -307,7 +342,8 @@ class ImportTab(QWidget):
 
         self._save_last_pdf_directory(selected_paths[0].parent)
         model_name = self.model_input.text().strip() or "gpt-4o-mini"
-        self._save_openai_settings(model_name)
+        reasoning_effort = self.reasoning_effort_selector.currentText()
+        self._save_openai_settings(model_name, reasoning_effort)
         initial_message = (
             f"Processing {selected_paths[0].name} (1/{len(selected_paths)})..."
         )
@@ -323,6 +359,7 @@ class ImportTab(QWidget):
             db_path=self.db_path,
             model_name=model_name,
             api_key=self.settings.openai_api_key or "",
+            reasoning_effort=reasoning_effort,
             extra_rules=self.rules_editor.toPlainText(),
             reimport=self.reimport_checkbox.isChecked(),
         )
@@ -356,6 +393,7 @@ class ImportTab(QWidget):
                 row["description"],
                 format_amount(row["amount_cents"]),
                 row["category"] or "",
+                format_local_datetime(row["imported_at"]),
                 row["file_name"],
             ]
             for column_index, value in enumerate(values):
@@ -513,6 +551,7 @@ class ImportTab(QWidget):
         self.import_button.setEnabled(not busy)
         self.reimport_checkbox.setEnabled(not busy)
         self.model_input.setEnabled(not busy)
+        self.reasoning_effort_selector.setEnabled(not busy)
         self.year_selector.setEnabled(not busy)
         self.rules_toggle.setEnabled(not busy)
         self.rules_editor.setEnabled(not busy)
@@ -529,9 +568,17 @@ class ImportTab(QWidget):
         self.settings = replace(current_settings, last_pdf_directory=str(directory))
         self.settings_store.save(self.settings)
 
-    def _save_openai_settings(self, model_name: str) -> None:
+    def _save_openai_settings(
+        self,
+        model_name: str,
+        reasoning_effort: str,
+    ) -> None:
         current_settings = self.settings_store.load()
-        self.settings = replace(current_settings, openai_model=model_name)
+        self.settings = replace(
+            current_settings,
+            openai_model=model_name,
+            openai_reasoning_effort=reasoning_effort,
+        )
         self.settings_store.save(self.settings)
 
     def _save_categorization_rules(self) -> None:

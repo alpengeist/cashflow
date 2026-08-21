@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from calendar import month_name
 from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QRectF, Qt, QUrl, Signal
@@ -267,6 +268,18 @@ class InOutReportTab(QWidget):
         self.year_selector.currentIndexChanged.connect(self.refresh_report)
         controls.addWidget(self.year_selector)
 
+        controls.addWidget(QLabel("Month"))
+        self.month_selector = QComboBox()
+        self.month_selector.addItem("All months", None)
+        for month in range(1, 13):
+            self.month_selector.addItem(month_name[month], month)
+        configure_compact_combo_box(
+            self.month_selector,
+            minimum_contents_length=10,
+        )
+        self.month_selector.currentIndexChanged.connect(self.refresh_report)
+        controls.addWidget(self.month_selector)
+
         self.refresh_button = QPushButton("Refresh Report")
         self.refresh_button.clicked.connect(self.refresh_data)
         controls.addWidget(self.refresh_button)
@@ -387,10 +400,22 @@ class InOutReportTab(QWidget):
 
     def refresh_report(self, *, reload_details: bool = True) -> None:
         year = self.current_year()
+        month = self.current_month()
 
-        active_month_count = max(1, self.database.fetch_active_month_count(year))
-        inflows = self.database.fetch_category_totals(year, inflow=True)
-        outflows = self.database.fetch_category_totals(year, inflow=False)
+        active_month_count = max(
+            1,
+            self.database.fetch_active_month_count(year, month),
+        )
+        inflows = self.database.fetch_category_totals(
+            year,
+            inflow=True,
+            month=month,
+        )
+        outflows = self.database.fetch_category_totals(
+            year,
+            inflow=False,
+            month=month,
+        )
 
         inflow_rows = []
         for row in inflows:
@@ -453,9 +478,19 @@ class InOutReportTab(QWidget):
             return
 
         if self.selected_flow == "inflow" and self.selected_category in self.current_inflow_categories:
-            self._load_detail_rows(year, inflow=True, category=self.selected_category)
+            self._load_detail_rows(
+                year,
+                inflow=True,
+                category=self.selected_category,
+                month=month,
+            )
         elif self.selected_flow == "outflow" and self.selected_category in self.current_outflow_categories:
-            self._load_detail_rows(year, inflow=False, category=self.selected_category)
+            self._load_detail_rows(
+                year,
+                inflow=False,
+                category=self.selected_category,
+                month=month,
+            )
         else:
             self.selected_flow = None
             self.selected_category = None
@@ -467,25 +502,49 @@ class InOutReportTab(QWidget):
             return None
         return int(value)
 
+    def current_month(self) -> int | None:
+        value = self.month_selector.currentData()
+        if value is None:
+            return None
+        return int(value)
+
     def _handle_inflow_click(self, index: int) -> None:
         if index >= len(self.current_inflow_categories):
             return
         self.selected_flow = "inflow"
         self.selected_category = self.current_inflow_categories[index]
-        self._load_detail_rows(self.current_year(), inflow=True, category=self.selected_category)
+        self._load_detail_rows(
+            self.current_year(),
+            inflow=True,
+            category=self.selected_category,
+            month=self.current_month(),
+        )
 
     def _handle_outflow_click(self, index: int) -> None:
         if index >= len(self.current_outflow_categories):
             return
         self.selected_flow = "outflow"
         self.selected_category = self.current_outflow_categories[index]
-        self._load_detail_rows(self.current_year(), inflow=False, category=self.selected_category)
+        self._load_detail_rows(
+            self.current_year(),
+            inflow=False,
+            category=self.selected_category,
+            month=self.current_month(),
+        )
 
-    def _load_detail_rows(self, year: int | None, *, inflow: bool, category: str) -> None:
+    def _load_detail_rows(
+        self,
+        year: int | None,
+        *,
+        inflow: bool,
+        category: str,
+        month: int | None,
+    ) -> None:
         rows = self.database.fetch_line_items_for_category(
             year,
             inflow=inflow,
             category=category,
+            month=month,
         )
         self.details_table.setUpdatesEnabled(False)
         self.details_table.setRowCount(len(rows))
@@ -518,9 +577,9 @@ class InOutReportTab(QWidget):
         self.details_table.setUpdatesEnabled(True)
 
         flow_label = "Inflows" if inflow else "Outflows"
-        year_label = f"in {year}" if year is not None else "for all years"
+        period_label = self._period_label(year, month)
         self.selection_label.setText(
-            f"{flow_label} {year_label} for category '{category}' ({len(rows)} item(s))"
+            f"{flow_label} {period_label} for category '{category}' ({len(rows)} item(s))"
         )
 
     def _clear_report(self) -> None:
@@ -638,9 +697,28 @@ class InOutReportTab(QWidget):
 
     def _mode_title_suffix(self) -> str:
         year = self.current_year()
-        year_suffix = f"Year {year}" if year is not None else "All years"
+        month = self.current_month()
+        period_suffix = self._period_title(year, month)
         mode_suffix = "Average Monthly" if self.report_mode == "average" else "Total"
-        return f"{year_suffix}, {mode_suffix}"
+        return f"{period_suffix}, {mode_suffix}"
+
+    def _period_title(self, year: int | None, month: int | None) -> str:
+        if year is not None and month is not None:
+            return f"{month_name[month]} {year}"
+        if month is not None:
+            return f"{month_name[month]}, all years"
+        if year is not None:
+            return f"Year {year}, all months"
+        return "All years, all months"
+
+    def _period_label(self, year: int | None, month: int | None) -> str:
+        if year is not None and month is not None:
+            return f"in {month_name[month]} {year}"
+        if month is not None:
+            return f"in {month_name[month]} across all years"
+        if year is not None:
+            return f"in {year}"
+        return "for all years and months"
 
     def _flow_label(self, base_label: str) -> str:
         if self.report_mode == "average":
